@@ -600,7 +600,8 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test SMTP connection
+            # Test SMTP connection. _connect_smtp selects implicit TLS for
+            # SMTPS/465 and STARTTLS for other ports, with IPv4 fallback.
             smtp = self._connect_smtp()
             try:
                 smtp.login(self._address, self._password)
@@ -1184,11 +1185,22 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        context = _ssl.create_default_context()
+        if smtp_port == 465:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=SMTP_CONNECT_TIMEOUT, context=context)
+            try:
+                server.login(address, password)
+                server.send_message(msg)
+            finally:
+                server.quit()
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=SMTP_CONNECT_TIMEOUT)
+            try:
+                server.starttls(context=context)
+                server.login(address, password)
+                server.send_message(msg)
+            finally:
+                server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:
