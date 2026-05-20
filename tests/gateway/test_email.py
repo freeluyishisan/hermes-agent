@@ -26,6 +26,7 @@ from gateway.platforms.base import SendResult
 # .env may set EMAIL_SMTP_PORT=465 for AgentMail. Individual tests opt into
 # the port they need via patch.dict.
 os.environ.pop("EMAIL_SMTP_PORT", None)
+os.environ.pop("EMAIL_DISABLE_INBOUND", None)
 
 
 class TestConfigEnvOverrides(unittest.TestCase):

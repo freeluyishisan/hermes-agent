@@ -476,6 +476,11 @@ class EmailAdapter(BasePlatformAdapter):
             extra.get("authserv_id", "") or os.getenv("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
 
+        # Outbound-only mode keeps SMTP delivery available for cron/reporting while
+        # preventing the IMAP gateway from independently answering inbound mail.
+        # Petra's canonical inbound email action owner is the AgentMail watchdog.
+        self._inbound_disabled = env_bool("EMAIL_DISABLE_INBOUND", False)
+
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
@@ -550,19 +555,19 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
-        # Validate up front so a missing host surfaces as an actionable config
-        # error instead of IMAP4_SSL("") raising the cryptic
-        # ``[Errno 8] nodename nor servname provided, or not known``.
-        missing = [
-            name
-            for name, value in (
-                ("EMAIL_ADDRESS", self._address),
-                ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
-                ("EMAIL_SMTP_HOST", self._smtp_host),
-            )
-            if not value
+        # Validate up front so missing hosts surface as actionable config errors
+        # instead of IMAP4_SSL("") raising the cryptic
+        # ``[Errno 8] nodename nor servname provided, or not known``.  In
+        # outbound-only mode, IMAP is intentionally unused, so only SMTP-side
+        # settings are required.
+        required_settings = [
+            ("EMAIL_ADDRESS", self._address),
+            ("EMAIL_PASSWORD", self._password),
+            ("EMAIL_SMTP_HOST", self._smtp_host),
         ]
+        if not self._inbound_disabled:
+            required_settings.append(("EMAIL_IMAP_HOST", self._imap_host))
+        missing = [name for name, value in required_settings if not value]
         if missing:
             message = (
                 "Not configured — missing "
@@ -580,24 +585,27 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-        except Exception as e:
-            logger.error("[Email] IMAP connection failed: %s", e)
-            return False
+        if not self._inbound_disabled:
+            try:
+                # Test IMAP connection
+                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                # Mark all existing messages as seen so we only process new ones
+                imap.select("INBOX")
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                imap.logout()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            except Exception as e:
+                logger.error("[Email] IMAP connection failed: %s", e)
+                return False
+        else:
+            logger.info("[Email] IMAP connection test skipped by EMAIL_DISABLE_INBOUND.")
 
         try:
             # Test SMTP connection. _connect_smtp selects implicit TLS for
@@ -613,6 +621,11 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
+        if self._inbound_disabled:
+            logger.info("[Email] Inbound polling disabled by EMAIL_DISABLE_INBOUND; SMTP send remains enabled.")
+            print(f"[Email] Connected as {self._address} (outbound-only)")
+            return True
+
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
         return True
