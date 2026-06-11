@@ -1978,17 +1978,6 @@ def _scan_assembled_cron_prompt(
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
-    """Execute a single cron job, applying any per-job profile override."""
-    job_id = job["id"]
-    with _job_profile_context(job_id, job.get("profile")) as active_profile:
-        runtime_job = job
-        if (job.get("profile") or "").strip():
-            runtime_job = dict(job)
-            runtime_job["_active_profile"] = active_profile
-        return _run_job_impl(runtime_job)
-
-
-def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
