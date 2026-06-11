@@ -439,6 +439,38 @@ class TestGeneratedSystemdUnits:
 
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
 
+    def test_systemd_staleness_normalization_ignores_path_payload(self):
+        installed = '''[Unit]
+Description=Hermes
+
+[Service]
+ExecStart=/venv/bin/python -m hermes_cli.main gateway run --replace
+Environment="PATH=/old/bin:/usr/bin"
+Environment="VIRTUAL_ENV=/venv"
+'''
+        expected = '''[Unit]
+Description=Hermes
+
+[Service]
+ExecStart=/venv/bin/python -m hermes_cli.main gateway run --replace
+Environment="PATH=/new/bin:/usr/local/bin:/usr/bin"
+Environment="VIRTUAL_ENV=/venv"
+'''
+
+        assert gateway_cli._normalize_service_definition(installed) == gateway_cli._normalize_service_definition(expected)
+
+    def test_systemd_staleness_normalization_keeps_execstart_differences(self):
+        upstream = '''[Service]
+ExecStart=/home/phoenix/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace
+Environment="PATH=/usr/bin"
+'''
+        fork = '''[Service]
+ExecStart=/home/phoenix/projects/repos/hermes-agent/.venv/bin/python -m hermes_cli.main gateway run --replace
+Environment="PATH=/usr/bin"
+'''
+
+        assert gateway_cli._normalize_service_definition(upstream) != gateway_cli._normalize_service_definition(fork)
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

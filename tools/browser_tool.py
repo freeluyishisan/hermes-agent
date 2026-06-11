@@ -232,6 +232,11 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
+_CDP_DISCOVERY_FAILURE_CACHE_TTL_S = 5.0
+_cdp_discovery_failure_cache: Dict[str, float] = {}
+_cdp_discovery_failure_cache_lock = threading.Lock()
+
+
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete connectable URL.
 
@@ -242,7 +247,10 @@ def _resolve_cdp_override(cdp_url: str) -> str:
 
     For discovery-style endpoints we fetch /json/version and return the
     webSocketDebuggerUrl so downstream tools always receive a concrete browser
-    websocket instead of an ambiguous host:port URL.
+    websocket instead of an ambiguous host:port URL. If discovery fails, the
+    override is treated as unavailable instead of returning a non-connectable
+    host:port value; this lets Hermes fall back to local/cloud browser routing
+    and avoids advertising CDP-only tools for a dead endpoint.
     """
     raw = (cdp_url or "").strip()
     if not raw:
@@ -253,7 +261,12 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         return raw
 
     discovery_url = raw
-    if lowered.startswith(("ws://", "wss://")):
+    if not re.match(r"^[a-z][a-z0-9+.-]*://", lowered):
+        # Common config shorthand: ``127.0.0.1:9222``. Treat it as a
+        # discovery endpoint instead of handing requests an invalid URL with
+        # no scheme.
+        discovery_url = "http://" + raw
+    elif lowered.startswith(("ws://", "wss://")):
         if raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]:
             discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
         else:
@@ -264,21 +277,33 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     else:
         version_url = discovery_url.rstrip("/") + "/json/version"
 
+    now = time.monotonic()
+    with _cdp_discovery_failure_cache_lock:
+        expires_at = _cdp_discovery_failure_cache.get(raw, 0.0)
+        if expires_at > now:
+            return ""
+        if expires_at:
+            _cdp_discovery_failure_cache.pop(raw, None)
+
     try:
         response = requests.get(version_url, timeout=10)
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        logger.warning("Failed to resolve CDP endpoint %s via %s: %s", raw, version_url, exc)
-        return raw
+        logger.debug("CDP endpoint %s is not reachable via %s: %s", raw, version_url, exc)
+        with _cdp_discovery_failure_cache_lock:
+            _cdp_discovery_failure_cache[raw] = time.monotonic() + _CDP_DISCOVERY_FAILURE_CACHE_TTL_S
+        return ""
 
     ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
     if ws_url:
         logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
         return ws_url
 
-    logger.warning("CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint", version_url)
-    return raw
+    logger.debug("CDP discovery at %s did not return webSocketDebuggerUrl", version_url)
+    with _cdp_discovery_failure_cache_lock:
+        _cdp_discovery_failure_cache[raw] = time.monotonic() + _CDP_DISCOVERY_FAILURE_CACHE_TTL_S
+    return ""
 
 
 def _get_cdp_override() -> str:
