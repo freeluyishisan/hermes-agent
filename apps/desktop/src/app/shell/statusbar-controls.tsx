@@ -88,6 +88,7 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 }
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
+  const interactiveLabel = item.title ?? (typeof item.label === 'string' ? item.label : undefined)
   const content = (
     <>
       {item.icon}
@@ -101,7 +102,13 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
       <Tip label={item.title}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+            <button
+              aria-label={interactiveLabel}
+              className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+              disabled={item.disabled}
+              title={item.title}
+              type="button"
+            >
               {content}
             </button>
           </DropdownMenuTrigger>
@@ -127,12 +134,15 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
                         menuItem.onSelect?.()
                       }}
+                      title={menuItem.title}
                     >
                       {menuItem.href ? (
                         <a
+                          aria-label={menuItem.title}
                           className="inline-flex w-full items-center gap-2"
                           href={menuItem.href}
                           rel="noreferrer"
+                          title={menuItem.title}
                           target="_blank"
                         >
                           {menuItem.icon}
@@ -160,6 +170,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
             'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
             item.className
           )}
+          title={item.title}
         >
           {content}
         </div>
@@ -170,7 +181,14 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={item.title}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          aria-label={interactiveLabel}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          href={item.href}
+          rel="noreferrer"
+          title={item.title}
+          target="_blank"
+        >
           {content}
         </a>
       </Tip>
@@ -180,6 +198,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   return (
     <Tip label={item.title}>
       <button
+        aria-label={interactiveLabel}
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}
         onClick={event => {
@@ -189,6 +208,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
           item.onSelect?.({ shiftKey: event.shiftKey })
         }}
+        title={item.title}
         type="button"
       >
         {content}
