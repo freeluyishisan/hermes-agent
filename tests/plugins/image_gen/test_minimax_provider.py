@@ -550,15 +550,32 @@ def test_live_image_generation(monkeypatch, tmp_path):
     """Real API call — only runs when RUN_LIVE_MINIMAX=1 is set.
 
     Useful for sanity-checking the plugin against a real MiniMax account.
-    Expects MINIMAX_API_KEY (and optionally MINIMAX_GROUP_ID) to be set
-    in the env (we override the autouse _fake_api_key fixture here so
-    the real key from the env is used).
+    Expects ``MINIMAX_API_KEY`` (and optionally ``MINIMAX_GROUP_ID``) to be
+    set in the **caller's shell environment** before pytest starts. The
+    autouse ``_fake_api_key`` fixture overwrites that key for unit tests;
+    we restore the real one here by reading the value that was set before
+    pytest's fixtures ran. ``os.environ`` is a snapshot of the shell at
+    process start, so once a fixture mutates a key, the original is gone
+    — we have to use the framework-supplied monkeypatch to recover it
+    via a sentinel approach: ask the user to pass the real key as a
+    different env var (``MINIMAX_API_KEY_LIVE``) when running live.
     """
-    # The autouse _fake_api_key fixture sets MINIMAX_API_KEY to a test
-    # value; undo that so the real env key is used.
-    real_key = os.environ.get("MINIMAX_API_KEY", "")
-    if real_key and real_key != "test-key-12345":
-        monkeypatch.setenv("MINIMAX_API_KEY", real_key)
+    # The autouse _fake_api_key fixture overwrites MINIMAX_API_KEY with
+    # "test-key-12345"; we need the real key. Read it from a side-channel
+    # env var that the caller sets when running live (the autouse fixture
+    # doesn't touch this one). Document the contract in the test docstring.
+    real_key = os.environ.get("MINIMAX_API_KEY_LIVE") or os.environ.get("MINIMAX_API_KEY", "")
+    if not real_key or real_key == "test-key-12345":
+        pytest.skip(
+            "Live test requires MINIMAX_API_KEY_LIVE (or a real MINIMAX_API_KEY "
+            "that doesn't equal the autouse fixture's 'test-key-12345')."
+        )
+    monkeypatch.setenv("MINIMAX_API_KEY", real_key)
+
+    # If a real GroupId is supplied, override the autouse fixture's wipe.
+    real_group = os.environ.get("MINIMAX_GROUP_ID_LIVE")
+    if real_group:
+        monkeypatch.setenv("MINIMAX_GROUP_ID", real_group)
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from plugins.image_gen.minimax import MiniMaxImageGenProvider
