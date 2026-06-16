@@ -1,37 +1,28 @@
 """MiniMax image generation backend.
 
-Exposes the MiniMax ``image-01`` model at three virtual model IDs that
+Exposes the MiniMax ``image-01`` model under three virtual model IDs that
 match the existing image_gen picker conventions. MiniMax's image API is
 synchronous — POST returns a JSON body with a URL (or base64) for the
 generated image, no job polling required.
 
     minimax-image-01            — full quality (default)
-    minimax-image-01-live       — faster / lower latency variant
-    minimax-image-01-square     — alias for the square aspect ratio
+    minimax-image-01-live       — lower latency variant
+    minimax-image-01-square     — alias that forces a square aspect ratio
 
-All three hit the same endpoint with a different ``model`` field. Output
-is saved under ``$HERMES_HOME/cache/images/``.
+All three hit the same native endpoint with a different ``model`` field.
+Output is saved under ``$HERMES_HOME/cache/images/``.
 
 Selection precedence (first hit wins):
 
 1. ``MINIMAX_IMAGE_MODEL`` env var (escape hatch for scripts / tests)
 2. ``image_gen.minimax.model`` in ``config.yaml``
-3. ``image_gen.model`` in ``config.yaml`` (when it's one of our IDs)
-4. :data:`DEFAULT_MODEL` — ``minimax-image-01``
+3. :data:`DEFAULT_MODEL` — ``minimax-image-01``
 
 Endpoint: ``POST https://api.minimax.io/v1/image_generation``
-
-Auth:
-  - Header ``Authorization: Bearer $MINIMAX_API_KEY`` (always required)
-  - Query string ``GroupId=$MINIMAX_GROUP_ID`` (required for accounts that
-    use group-scoped billing; optional otherwise — the server returns
-    401 with a "GroupId is required" message when it's missing)
-
-This plugin exists because MiniMax's image generation API is NOT
-OpenAI-compatible — calling ``/v1/images/generations`` returns 404.
-The native ``/v1/image_generation`` endpoint uses a different URL and
-a different response shape, so a dedicated provider is the cleanest
-way to surface it.
+Auth: ``Authorization: Bearer $MINIMAX_API_KEY`` (always) and an optional
+``GroupId`` query parameter (``$MINIMAX_GROUP_ID``) for accounts that use
+group-scoped billing. The native endpoint is **not** OpenAI-compatible —
+``/v1/images/generations`` returns 404.
 """
 
 from __future__ import annotations
@@ -106,7 +97,12 @@ _ASPECT_MAP = {
 
 
 def _load_minimax_config() -> Dict[str, Any]:
-    """Read ``image_gen.minimax`` (with fallthrough to ``image_gen``) from config.yaml."""
+    """Read the ``image_gen`` section from config.yaml.
+
+    Returns the full ``image_gen`` dict (callers extract their own sub-keys);
+    returns an empty dict on any read or parse failure so callers can use
+    ``.get()`` chains without guarding for None.
+    """
     try:
         from hermes_cli.config import load_config
 
@@ -119,7 +115,10 @@ def _load_minimax_config() -> Dict[str, Any]:
 
 
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which model to use and return ``(model_id, meta)``."""
+    """Decide which model to use and return ``(model_id, meta)``.
+
+    Precedence: env var > config (``image_gen.minimax.model``) > default.
+    """
     env_override = os.environ.get("MINIMAX_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -131,10 +130,6 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         value = minimax_cfg.get("model")
         if isinstance(value, str) and value in _MODELS:
             candidate = value
-    if candidate is None:
-        top = cfg.get("model")
-        if isinstance(top, str) and top in _MODELS:
-            candidate = top
 
     if candidate is not None:
         return candidate, _MODELS[candidate]
@@ -184,9 +179,6 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             for model_id, meta in _MODELS.items()
         ]
 
-    def default_model(self) -> Optional[str]:
-        return DEFAULT_MODEL
-
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "MiniMax",
@@ -215,12 +207,14 @@ class MiniMaxImageGenProvider(ImageGenProvider):
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+        provider_name = self.name
 
         if not prompt:
             return error_response(
                 error="Prompt is required and must be a non-empty string",
                 error_type="invalid_argument",
-                provider="minimax",
+                provider=provider_name,
+                prompt=prompt,
                 aspect_ratio=aspect,
             )
 
@@ -233,7 +227,8 @@ class MiniMaxImageGenProvider(ImageGenProvider):
                     "https://platform.minimax.io/"
                 ),
                 error_type="auth_required",
-                provider="minimax",
+                provider=provider_name,
+                prompt=prompt,
                 aspect_ratio=aspect,
             )
 
@@ -248,7 +243,9 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             return error_response(
                 error=f"n must be 1-4, got {n}",
                 error_type="invalid_argument",
-                provider="minimax",
+                provider=provider_name,
+                model=model_id,
+                prompt=prompt,
                 aspect_ratio=aspect,
             )
         response_format = str(kwargs.get("response_format", "url")).lower()
@@ -256,7 +253,9 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             return error_response(
                 error=f"response_format must be 'url' or 'base64', got {response_format!r}",
                 error_type="invalid_argument",
-                provider="minimax",
+                provider=provider_name,
+                model=model_id,
+                prompt=prompt,
                 aspect_ratio=aspect,
             )
 
@@ -298,7 +297,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             return error_response(
                 error=f"MiniMax image generation timed out after {TIMEOUT_SECONDS}s",
                 error_type="timeout",
-                provider="minimax",
+                provider=provider_name,
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
@@ -308,7 +307,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             return error_response(
                 error=f"MiniMax image generation failed: {exc}",
                 error_type="api_error",
-                provider="minimax",
+                provider=provider_name,
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
@@ -335,7 +334,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
                     f"{server_msg or response.reason}"
                 ),
                 error_type="api_error",
-                provider="minimax",
+                provider=provider_name,
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
@@ -347,7 +346,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             return error_response(
                 error=f"MiniMax returned non-JSON body: {exc}",
                 error_type="invalid_response",
-                provider="minimax",
+                provider=provider_name,
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
@@ -366,7 +365,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
                     f"{base_resp.get('status_msg') or 'empty data object'}"
                 ),
                 error_type="empty_response",
-                provider="minimax",
+                provider=provider_name,
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
@@ -391,7 +390,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
                 return error_response(
                     error=f"Could not save image to cache: {exc}",
                     error_type="io_error",
-                    provider="minimax",
+                    provider=provider_name,
                     model=model_id,
                     prompt=prompt,
                     aspect_ratio=aspect,
@@ -417,7 +416,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             return error_response(
                 error="MiniMax response contained neither b64_json nor image_urls",
                 error_type="empty_response",
-                provider="minimax",
+                provider=provider_name,
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
@@ -428,7 +427,7 @@ class MiniMaxImageGenProvider(ImageGenProvider):
             model=model_id,
             prompt=prompt,
             aspect_ratio=aspect,
-            provider="minimax",
+            provider=provider_name,
             extra={"minimax_aspect": minmax_aspect, "api_model": api_model},
         )
 
