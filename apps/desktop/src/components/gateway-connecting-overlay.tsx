@@ -1,17 +1,14 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useI18n } from '@/i18n/context'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
 
 // Static, always-legible prefix; only TAIL ever scrambles. Splitting them at
 // the render level means no timer logic (even a stale HMR one) can ever
-// scramble "CONN".
-const PREFIX = 'CONN'
-const TAIL = 'ECTING'
-// Even-weight mono ascii so cycling glyphs don't jump width (matches the
-// nousnet-web download-button decode effect).
+// scramble the prefix.
 const SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
 const TICK_MS = 45
 
@@ -39,18 +36,22 @@ function forcedPreview(): boolean {
   }
 }
 
-function scrambledTail(resolvedCount: number): string {
-  return Array.from(TAIL, (ch, i) =>
+function scrambledTail(tail: string, resolvedCount: number): string {
+  return Array.from(tail, (ch, i) =>
     i < resolvedCount ? ch : SCRAMBLE_CHARS[(Math.random() * SCRAMBLE_CHARS.length) | 0]
   ).join('')
 }
 
 export function GatewayConnectingOverlay() {
+  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const [previewing] = useState(forcedPreview)
-  const [tail, setTail] = useState(TAIL)
+  const [tail, setTail] = useState('')
   const [phase, setPhase] = useState<Phase>('live')
+
+  const prefix = t.boot.connectingPrefix
+  const tailText = t.boot.connectingTail
 
   // The full-screen connecting overlay is for initial boot only. After a
   // healthy boot, flaky networks / sleep-wake can drop the socket and flip the
@@ -78,7 +79,7 @@ export function GatewayConnectingOverlay() {
     let hold = 0
 
     const id = window.setInterval(() => {
-      if (resolved >= TAIL.length) {
+      if (resolved >= tailText.length) {
         hold += 1
 
         if (hold > 16) {
@@ -86,17 +87,17 @@ export function GatewayConnectingOverlay() {
           hold = 0
         }
 
-        setTail(TAIL)
+        setTail(tailText)
 
         return
       }
 
       resolved += 0.5
-      setTail(scrambledTail(Math.floor(resolved)))
+      setTail(scrambledTail(tailText, Math.floor(resolved)))
     }, TICK_MS)
 
     return () => window.clearInterval(id)
-  }, [phase, previewing, connecting])
+  }, [phase, previewing, connecting, tailText])
 
   // Kick off the exit when connected: real connect, or a faked timer in preview.
   useEffect(() => {
@@ -106,7 +107,7 @@ export function GatewayConnectingOverlay() {
 
     if (previewing) {
       const id = window.setTimeout(() => {
-        setTail(TAIL)
+        setTail(tailText)
         setPhase('text-out')
       }, PREVIEW_CONNECT_MS)
 
@@ -114,10 +115,10 @@ export function GatewayConnectingOverlay() {
     }
 
     if (gatewayState === 'open' && shownRef.current) {
-      setTail(TAIL)
+      setTail(tailText)
       setPhase('text-out')
     }
-  }, [phase, previewing, gatewayState])
+  }, [phase, previewing, gatewayState, tailText])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -136,13 +137,13 @@ export function GatewayConnectingOverlay() {
     // Preview replays so we can keep watching the transition.
     if (phase === 'gone' && previewing) {
       const id = window.setTimeout(() => {
-        setTail(TAIL)
+        setTail(tailText)
         setPhase('live')
       }, PREVIEW_REPLAY_MS)
 
       return () => window.clearTimeout(id)
     }
-  }, [phase, previewing])
+  }, [phase, previewing, tailText])
 
   // Boot failed — BootFailureOverlay owns the screen; don't linger behind it.
   if (boot.error && !previewing) {
@@ -176,7 +177,7 @@ export function GatewayConnectingOverlay() {
           leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
         )}
       >
-        {PREFIX}
+        {prefix}
         {tail}
         <span
           aria-hidden="true"

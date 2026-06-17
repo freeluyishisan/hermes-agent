@@ -68,6 +68,8 @@ export const zh: Translations = {
       startingDesktopConnection: '正在启动桌面连接',
       startingHermesDesktop: '正在启动 Hermes 桌面版…'
     },
+    connectingPrefix: 'CONN',
+    connectingTail: 'ECTING',
     errors: {
       backgroundExited: 'Hermes 后台进程已退出。',
       backgroundExitedDuringStartup: 'Hermes 后台进程在启动期间退出。',
@@ -2386,6 +2388,39 @@ export const zh: Translations = {
       title: '侧边栏',
       description: '显示移动端侧边栏。',
       toggle: '切换侧边栏'
+    }
+  },
+
+  uninstall: {
+    dangerZone: 'Danger zone',
+    checking: "Checking what's installed…",
+    confirmTitle: 'Confirm uninstall',
+    confirmBody: consequence => `This removes ${consequence}. This can't be undone.`,
+    uninstalling: 'Uninstalling…',
+    yesUninstall: 'Yes, uninstall',
+    cancel: 'Cancel',
+    uninstallHermes: 'Uninstall Hermes',
+    uninstallDescription:
+      'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+    options: {
+      gui: {
+        title: 'Uninstall Chat GUI only',
+        description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+        consequence: 'the desktop Chat GUI (this app and its data)'
+      },
+      lite: {
+        title: 'Uninstall GUI + agent, keep my data',
+        description:
+          'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+        consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+      },
+      full: {
+        title: 'Uninstall everything',
+        description:
+          'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+        consequence:
+          'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+      }
     }
   }
 }

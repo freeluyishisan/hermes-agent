@@ -1,6 +1,8 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n/context'
 import introCopyJsonl from './intro-copy.jsonl?raw'
+import introCopyFrJsonl from './intro-copy.fr.jsonl?raw'
 
 type IntroCopy = {
   headline: string
@@ -102,14 +104,23 @@ function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
 }
 
 const INTRO_COPY_BY_PERSONALITY = parseIntroCopy(introCopyJsonl)
+const INTRO_COPY_FR_BY_PERSONALITY = parseIntroCopy(introCopyFrJsonl)
 
-function neutralCopy(): IntroCopy[] {
-  return INTRO_COPY_BY_PERSONALITY.none || INTRO_COPY_BY_PERSONALITY.default || FALLBACK_COPY
+function introCopyForLocale(locale?: string): Record<string, IntroCopy[]> {
+  if (locale === 'fr') {
+    return INTRO_COPY_FR_BY_PERSONALITY
+  }
+  return INTRO_COPY_BY_PERSONALITY
 }
 
-function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
+function neutralCopy(locale?: string): IntroCopy[] {
+  const map = introCopyForLocale(locale)
+  return map.none || map.default || FALLBACK_COPY
+}
+
+function fallbackCopyForPersonality(personalityKey: string, locale?: string): IntroCopy[] {
   if (NEUTRAL_PERSONALITIES.has(personalityKey)) {
-    return neutralCopy()
+    return neutralCopy(locale)
   }
 
   const label = titleize(personalityKey)
@@ -144,19 +155,21 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
 
 const WORDMARK = 'HERMES AGENT'
 
-function resolveCopy(personality?: string, seed?: number): IntroCopy {
+function resolveCopy(personality?: string, seed?: number, locale?: string): IntroCopy {
   const personalityKey = normalizeKey(personality)
 
+  const map = introCopyForLocale(locale)
   const copies = NEUTRAL_PERSONALITIES.has(personalityKey)
-    ? INTRO_COPY_BY_PERSONALITY[personalityKey] || neutralCopy()
-    : INTRO_COPY_BY_PERSONALITY[personalityKey] || fallbackCopyForPersonality(personalityKey)
+    ? map[personalityKey] || neutralCopy(locale)
+    : map[personalityKey] || fallbackCopyForPersonality(personalityKey, locale)
 
   return pickCopy(copies, seed)
 }
 
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const { locale } = useI18n()
+  const copy = resolveCopy(personality, mountSeed + (seed ?? 0), locale)
 
   return (
     <div
