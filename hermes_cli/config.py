@@ -2153,6 +2153,11 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Per-skill protection from the background self-improvement review
+        # fork. Skills named here cannot be modified by skill_manage during
+        # background review turns — only during foreground (normal) turns.
+        # Empty by default (back-compat: no protection).
+        "review_protected": [],
     },
 
     # Curator — background skill maintenance.

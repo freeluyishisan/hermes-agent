@@ -19,6 +19,9 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    set_review_protected_skills,
+    clear_review_protected_skills,
+    _review_protected_guard,
     MAX_NAME_LENGTH,
 )
 
@@ -1090,4 +1093,142 @@ class TestDeleteSkillRmtreeGuard:
             result = _delete_skill("outside", absorbed_into="")
         assert result["success"] is False
         assert "skills root" in result["error"].lower()
-        assert outside.exists()
+        assert outside.exists()  # ensure no accidental rmtree
+
+
+# ---------------------------------------------------------------------------
+# Background review protection (_review_protected_guard)
+# ---------------------------------------------------------------------------
+
+class TestReviewProtectedGuard:
+    """Tests for the per-skill background review protection guard."""
+
+    def test_guard_returns_none_when_threadlocal_unset(self):
+        """No protection when the threadlocal is not set (foreground turns)."""
+        clear_review_protected_skills()
+        assert _review_protected_guard("patch", "any-skill") is None
+        assert _review_protected_guard("delete", "any-skill") is None
+
+    def test_guard_blocks_patch_on_protected_skill(self):
+        """patch on a protected skill is blocked."""
+        set_review_protected_skills({"my-skill"})
+        try:
+            result = _review_protected_guard("patch", "my-skill")
+            assert result is not None
+            assert "protected" in result
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_blocks_edit_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        try:
+            assert _review_protected_guard("edit", "my-skill") is not None
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_blocks_delete_on_protected_skill(self):
+        """delete must also be blocked — Codex review issue #2."""
+        set_review_protected_skills({"my-skill"})
+        try:
+            assert _review_protected_guard("delete", "my-skill") is not None
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_blocks_write_file_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        try:
+            assert _review_protected_guard("write_file", "my-skill") is not None
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_blocks_remove_file_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        try:
+            assert _review_protected_guard("remove_file", "my-skill") is not None
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_blocks_create_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        try:
+            assert _review_protected_guard("create", "my-skill") is not None
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_allows_unprotected_skill(self):
+        """A skill NOT in the protected list is allowed."""
+        set_review_protected_skills({"other-skill"})
+        try:
+            assert _review_protected_guard("patch", "my-skill") is None
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_empty_set_allows_all(self):
+        """Empty protection set = no protection (back-compat)."""
+        set_review_protected_skills(set())
+        try:
+            assert _review_protected_guard("patch", "any") is None
+        finally:
+            clear_review_protected_skills()
+
+    def test_guard_unknown_action_returns_none(self):
+        """Actions outside the write set pass through."""
+        set_review_protected_skills({"my-skill"})
+        try:
+            assert _review_protected_guard("view", "my-skill") is None
+            assert _review_protected_guard("list", "my-skill") is None
+        finally:
+            clear_review_protected_skills()
+
+
+class TestReviewProtectedDispatch:
+    """Integration: skill_manage respects the guard end-to-end."""
+
+    def test_protected_skill_patch_blocked_via_skill_manage(self, tmp_path):
+        """skill_manage(action='patch') on a protected skill returns error."""
+        with _skill_dir(tmp_path):
+            _create_skill("test-protected", VALID_SKILL_CONTENT)
+            set_review_protected_skills({"test-protected"})
+            try:
+                result_json = skill_manage(
+                    action="patch",
+                    name="test-protected",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the NEW thing.",
+                )
+                result = json.loads(result_json)
+                assert result["success"] is False
+                assert "protected" in result["error"]
+            finally:
+                clear_review_protected_skills()
+
+    def test_unprotected_skill_patch_allowed_via_skill_manage(self, tmp_path):
+        """skill_manage(action='patch') on a non-protected skill succeeds."""
+        with _skill_dir(tmp_path):
+            _create_skill("test-free", VALID_SKILL_CONTENT)
+            set_review_protected_skills({"other-skill"})
+            try:
+                result_json = skill_manage(
+                    action="patch",
+                    name="test-free",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the NEW thing.",
+                )
+                result = json.loads(result_json)
+                assert result["success"] is True
+            finally:
+                clear_review_protected_skills()
+
+    def test_foreground_patch_always_allowed(self, tmp_path):
+        """Without threadlocal set, patch works normally (foreground)."""
+        with _skill_dir(tmp_path):
+            _create_skill("test-foreground", VALID_SKILL_CONTENT)
+            clear_review_protected_skills()
+            result_json = skill_manage(
+                action="patch",
+                name="test-foreground",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Foreground change.",
+            )
+            result = json.loads(result_json)
+            assert result["success"] is True
