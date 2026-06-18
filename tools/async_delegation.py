@@ -312,6 +312,10 @@ def _push_completion_event(
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
         "role": record.get("role"),
+        # Surface which profile actually ran (None for ordinary subagents), so a
+        # background completion re-entering the chat carries the same identity
+        # metadata as a synchronous result. See issue #41889.
+        "profile": result.get("profile"),
         "model": result.get("model") or record.get("model"),
         "status": status,
         "summary": summary,

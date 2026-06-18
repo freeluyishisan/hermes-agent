@@ -671,6 +671,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    profile_soul: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -680,11 +681,19 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    parts: List[str] = []
+    if profile_soul and profile_soul.strip():
+        # Lead with the target profile's persona so the subagent adopts its
+        # identity, then the standard delegated-task framing.
+        parts.append(profile_soul.strip())
+        parts.append("")
+    parts.extend(
+        [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+            f"YOUR TASK:\n{goal}",
+        ]
+    )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1047,6 +1056,12 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Profile-backed delegation: when set, the child adopts a named profile's
+    # SOUL.md persona (prepended to its system prompt) and is tagged with the
+    # profile name for result metadata. The profile's model / credentials /
+    # toolsets arrive via the existing model + override_* + toolsets params.
+    profile_soul: Optional[str] = None,
+    profile_name: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1134,6 +1149,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        profile_soul=profile_soul,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1307,6 +1323,9 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Tag the child with the profile it impersonates (None for ordinary
+    # subagents) so _run_single_child can surface it in the result metadata.
+    child._delegate_profile = profile_name
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1507,6 +1526,155 @@ def _dump_subagent_timeout_diagnostic(
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Profile-backed delegation (in-process)
+# ---------------------------------------------------------------------------
+# A task may name a ``profile``: the subagent then runs with that profile's
+# identity — its SOUL.md persona, model/provider + credentials, and toolsets —
+# while remaining an ordinary in-process child AIAgent built by
+# ``_build_child_agent``. We reuse the existing override hooks
+# (override_provider/base_url/api_key/api_mode + model) and feed the profile's
+# SOUL.md into the child's ephemeral system prompt, so every existing
+# capability (synchronous, batch, background, interrupt, heartbeat, cost
+# rollup) keeps working unchanged — only the child's identity differs.
+# (Issue #41889.)
+#
+# Resolving another profile's runtime is HERMES_HOME-scoped: config.yaml,
+# SOUL.md and auth.json live under the profile dir, and per-profile API keys
+# live in the profile's own .env (loaded into os.environ only at startup). We
+# therefore resolve under a scoped HERMES_HOME override (a contextvar — see
+# hermes_constants.set_hermes_home_override — which does NOT mutate os.environ)
+# plus a brief, lock-serialised load of the profile's .env, capturing static
+# credentials to hand to the child. Resolution runs on the main thread during
+# the sequential child-build phase, before any worker threads start, so the
+# transient .env load cannot race a concurrent batch task.
+
+_profile_resolve_lock = threading.Lock()
+
+
+def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
+    """Resolve a named profile's identity + runtime for in-process delegation.
+
+    Returns ``{name, soul, model, provider, base_url, api_key, api_mode,
+    toolsets}``. Raises ``ValueError`` (surfaced to the caller as a tool error)
+    when the profile name is invalid, does not exist, or cannot be resolved.
+    """
+    from hermes_cli.profiles import (
+        normalize_profile_name,
+        validate_profile_name,
+        profile_exists,
+        get_profile_dir,
+    )
+
+    try:
+        canon = normalize_profile_name(str(profile_name))
+        validate_profile_name(canon)
+    except Exception as exc:
+        raise ValueError(f"Invalid profile {profile_name!r}: {exc}") from exc
+    if not profile_exists(canon):
+        raise ValueError(
+            f"Profile '{canon}' does not exist. Create it with "
+            f"`hermes profile create {canon}`, or list profiles with "
+            f"`hermes profile list`."
+        )
+
+    profile_dir = get_profile_dir(canon)
+
+    # SOUL.md is a plain file — read it directly (no env scoping needed).
+    soul = ""
+    soul_path = profile_dir / "SOUL.md"
+    try:
+        if soul_path.is_file():
+            soul = soul_path.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        logger.debug("Could not read SOUL.md for profile %s: %s", canon, exc)
+
+    from hermes_constants import (
+        set_hermes_home_override,
+        reset_hermes_home_override,
+    )
+    from hermes_cli.config import load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    model = provider = base_url = api_key = api_mode = None
+    toolsets: Optional[List[str]] = None
+
+    with _profile_resolve_lock:
+        # Load the profile's own .env over the current environ so credential
+        # resolution sees the profile's keys; remember prior values to restore.
+        prof_env: Dict[str, str] = {}
+        try:
+            from dotenv import dotenv_values
+
+            env_path = str(profile_dir / ".env")
+            # Windows editors may save .env as cp1252 — mirror the latin-1
+            # fallback in hermes_cli.env_loader (CONTRIBUTING.md cross-platform
+            # rule #4) so a non-UTF-8 profile .env doesn't silently yield no
+            # credentials.
+            try:
+                raw_env = dotenv_values(env_path, encoding="utf-8")
+            except UnicodeDecodeError:
+                raw_env = dotenv_values(env_path, encoding="latin-1")
+            prof_env = {k: v for k, v in raw_env.items() if v is not None}
+        except Exception as exc:
+            logger.debug("Could not read .env for profile %s: %s", canon, exc)
+        saved_env = {k: os.environ.get(k) for k in prof_env}
+        os.environ.update(prof_env)
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            cfg = load_config()
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, str):
+                model = model_cfg
+            elif isinstance(model_cfg, dict):
+                model = model_cfg.get("default") or model_cfg.get("model")
+                provider = model_cfg.get("provider")
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=provider, target_model=model
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not resolve runtime for profile '{canon}': {exc}. "
+                    f"Check that the profile is configured "
+                    f"(`hermes -p {canon} doctor`)."
+                ) from exc
+            base_url = runtime.get("base_url")
+            api_key = runtime.get("api_key")
+            api_mode = runtime.get("api_mode")
+            # Mirror _resolve_delegation_credentials: keep the configured
+            # provider label when the runtime collapses a named custom provider
+            # to "custom"; otherwise take the runtime's resolved provider.
+            if not (runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM and provider):
+                provider = runtime.get("provider") or provider
+            if not model:
+                model = runtime.get("model")
+            try:
+                from hermes_cli.tools_config import _get_platform_tools
+
+                toolsets = sorted(_get_platform_tools(cfg, "cli")) or None
+            except Exception as exc:
+                logger.debug("Could not resolve toolsets for %s: %s", canon, exc)
+        finally:
+            reset_hermes_home_override(token)
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    return {
+        "name": canon,
+        "soul": soul,
+        "model": model,
+        "provider": provider,
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_mode": api_mode,
+        "toolsets": toolsets,
+    }
 
 
 def _run_single_child(
@@ -1886,9 +2054,14 @@ def _run_single_child(
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
+        # str-guard mirrors the _model handling below: a real child carries a
+        # string profile name (or None); the guard keeps mock children (tests)
+        # from leaking an auto-created MagicMock attribute into the JSON entry.
+        _profile = getattr(child, "_delegate_profile", None)
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
+            "profile": _profile if isinstance(_profile, str) else None,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
@@ -2131,6 +2304,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2232,7 +2406,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "profile": profile,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2273,19 +2453,52 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Defaults: delegation-config credentials/model (creds) for an
+            # ordinary subagent. When the task names a profile, resolve THAT
+            # profile's SOUL.md + model/provider/credentials + toolsets and use
+            # them instead — the child still builds via the normal in-process
+            # path, so background/batch/interrupt/cost all keep working.
+            task_model = creds["model"]
+            task_provider = creds["provider"]
+            task_base_url = creds["base_url"]
+            task_api_key = creds["api_key"]
+            task_api_mode = creds["api_mode"]
+            task_toolsets = t.get("toolsets") or toolsets
+            profile_soul = None
+            profile_name = None
+            if t.get("profile"):
+                try:
+                    pb = _resolve_profile_bundle(t["profile"])
+                except ValueError as exc:
+                    return tool_error(str(exc))
+                profile_name = pb["name"]
+                profile_soul = pb["soul"]
+                task_model = pb["model"] or task_model
+                task_provider = pb["provider"]
+                task_base_url = pb["base_url"]
+                task_api_key = pb["api_key"]
+                task_api_mode = pb["api_mode"]
+                # Use the profile's own toolsets only when the caller did not
+                # pin toolsets explicitly. (_build_child_agent still intersects
+                # with the parent's tools — a subagent never gains tools the
+                # parent lacks.)
+                if not (t.get("toolsets") or toolsets):
+                    task_toolsets = pb["toolsets"]
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                toolsets=task_toolsets,
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_provider,
+                override_base_url=task_base_url,
+                override_api_key=task_api_key,
+                override_api_mode=task_api_mode,
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -2295,6 +2508,8 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                profile_soul=profile_soul,
+                profile_name=profile_name,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2987,6 +3202,12 @@ def _build_top_level_description() -> str:
         "delegation.orchestrator_enabled=false.\n"
         "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
+        "- Pass 'profile' (top-level, or per-task in 'tasks') to run a subagent "
+        "under a named Hermes profile's identity — its SOUL.md persona, "
+        "model/provider, credentials, and toolsets. Use it to call a specialist "
+        "profile for a bounded answer without Kanban. Works with "
+        "background=true and with batch fan-out (each task may name a different "
+        "profile). The profile must already exist.\n"
         "- Results are always returned as an array, one entry per task."
     )
 
@@ -3098,6 +3319,21 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Run the subagent under a named Hermes profile's identity: "
+                    "its SOUL.md persona, model/provider config, credentials, "
+                    "and toolsets are loaded and the subagent runs as that "
+                    "specialist, returning its answer to you. Use it to call a "
+                    "specialist profile (e.g. profile='reader' or "
+                    "'security-reviewer') without going through Kanban. The "
+                    "profile must already exist (`hermes profile list`). Works "
+                    "with background=true and with the 'tasks' batch (each task "
+                    "may set its own 'profile'). When omitted, the subagent "
+                    "runs under your own profile as usual."
+                ),
+            },
             "toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -3142,6 +3378,15 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Per-task profile override. Run this task's "
+                                "subagent under the named profile (loads its "
+                                "SOUL.md, model, credentials, toolsets). See "
+                                "the top-level 'profile' parameter."
+                            ),
                         },
                     },
                     "required": ["goal"],
@@ -3230,6 +3475,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
