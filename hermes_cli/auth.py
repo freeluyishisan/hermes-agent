@@ -407,6 +407,9 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="vertex",
         name="Google Vertex AI",
         auth_type="vertex",
+        # Placeholder only — the real endpoint (with project_id + location) is
+        # computed at runtime by agent.vertex_adapter.build_vertex_base_url().
+        # This value is never used to issue a request; see runtime_provider.py.
         inference_base_url="https://aiplatform.googleapis.com/v1beta1",
         api_key_env_vars=("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"),
         base_url_env_var="VERTEX_BASE_URL",
@@ -1615,7 +1618,17 @@ def resolve_provider(
         # also requires explicit selection.
         if pid in {"copilot", "lmstudio"}:
             continue
-        for env_var in pconfig.api_key_env_vars:
+        env_vars = pconfig.api_key_env_vars
+        if pid == "vertex":
+            # GOOGLE_APPLICATION_CREDENTIALS is a generic GCP SDK variable, very
+            # commonly exported for non-inference tooling (bq, gsutil, Cloud
+            # Functions local dev, GKE workload-identity sidecars). Auto-selecting
+            # Vertex for inference just because it's present would hijack those
+            # users, so only auto-detect on the dedicated VERTEX_CREDENTIALS_PATH
+            # alias. Explicit `provider: vertex` config and vertex_adapter's
+            # SA-path resolution still honor GOOGLE_APPLICATION_CREDENTIALS.
+            env_vars = tuple(v for v in env_vars if v != "GOOGLE_APPLICATION_CREDENTIALS")
+        for env_var in env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
 
@@ -6313,7 +6326,7 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 
     return {
         "provider": provider_id,
-        "api_key": "***",
+        "api_key": "copilot-acp",
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,
