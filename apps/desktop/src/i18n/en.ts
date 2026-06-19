@@ -68,8 +68,8 @@ export const en: Translations = {
       startingDesktopConnection: 'Starting desktop connection',
       startingHermesDesktop: 'Starting Hermes Desktop…'
     },
-    connectingPrefix: 'CONN',
-    connectingTail: 'ECTING',
+    connectingPrefix: 'Connecting',
+    connectingTail: '…',
     errors: {
       backgroundExited: 'Hermes background process exited.',
       backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
