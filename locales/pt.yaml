@@ -23,6 +23,23 @@ gateway:
   config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"
   config_save_failed: "⚠️ Não foi possível guardar a configuração: {error}"
 
+  restart_success:       "♻ Gateway restarted successfully. Your session continues."
+  gateway_online:        "♻️ Gateway online — Hermes is back and ready."
+  subagent_working:      "⏳ Subagent working{status_detail} — your message is queued for when it finishes (use /stop to cancel everything)."
+  queued_next_turn:      "⏳ Queued for the next turn{status_detail}. I'll respond once the current task finishes."
+  interrupting_task:     "⚡ Interrupting current task{status_detail}. I'll respond to your message shortly."
+  long_running:          "⏳ Working — {minutes} min{status_detail}"
+  no_activity_warning:   "⚠️ No activity for {minutes} min. If the agent does not respond soon, it will be timed out in {remaining} min. You can continue waiting or use /reset."
+  provider_auth_failed:  "⚠️ Provider authentication failed. Check the configured credentials; raw provider details are in the gateway logs."
+  provider_rejected:     "⚠️ The model provider rejected the request. I kept the raw provider error out of chat; check gateway logs for details or try rephrasing."
+  provider_rate_limited: "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+  provider_failed:       "⚠️ The model provider failed after retries. I kept raw provider details out of chat; check gateway logs for diagnostics."
+  session_too_large:     "⚠️ Session too large for the model's context window.\nUse /compact to compress the conversation, or /reset to start fresh."
+  request_failed:        "The request failed: {error}\nTry again or use /reset to start a fresh session."
+  processing_stopped:    "⚠️ Processing stopped: {error}. Try again."
+  empty_response:        "⚠️ Processing completed but no response was generated. This may be a transient error — try sending your message again."
+  no_response_generated: "(No response generated)"
+
   model:
     error_prefix:           "Erro: {error}"
     switched:               "Modelo alterado para `{model}`"

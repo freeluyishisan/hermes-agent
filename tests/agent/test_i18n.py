@@ -328,3 +328,30 @@ def test_override_cache_reset(monkeypatch):
     assert i18n.t("gateway.goal_cleared", lang="en") == "v1"  # cached
     i18n.reset_language_cache()
     assert i18n.t("gateway.goal_cleared", lang="en") == "v2"  # re-read
+
+
+# ---------------------------------------------------------------------------
+# New gateway lifecycle / error-reply keys (Task 4)
+# ---------------------------------------------------------------------------
+
+NEW_GATEWAY_KEYS = [
+    "gateway.restart_success", "gateway.gateway_online", "gateway.subagent_working",
+    "gateway.queued_next_turn", "gateway.interrupting_task", "gateway.long_running",
+    "gateway.no_activity_warning", "gateway.provider_auth_failed",
+    "gateway.provider_rejected", "gateway.provider_rate_limited",
+    "gateway.provider_failed", "gateway.session_too_large", "gateway.request_failed",
+    "gateway.processing_stopped", "gateway.empty_response",
+    "gateway.no_response_generated",
+]
+
+
+@pytest.mark.parametrize("key", NEW_GATEWAY_KEYS)
+def test_new_gateway_keys_present_en_and_ru(key):
+    assert i18n.t(key, lang="en") != key, f"{key} missing in en.yaml"
+    assert i18n.t(key, lang="ru") != key, f"{key} missing in ru.yaml"
+
+
+def test_new_gateway_keys_ru_is_translated():
+    # A representative key must actually differ from English (real translation).
+    assert i18n.t("gateway.processing_stopped", lang="ru") != \
+        i18n.t("gateway.processing_stopped", lang="en")
