@@ -60,6 +60,8 @@ _RUN_PY = Path(gw.__file__).read_text(encoding="utf-8")
     '⏳ Subagent working',            # Task 8
     '⏳ Queued for the next turn',    # Task 8
     '⚡ Interrupting current task',   # Task 8
+    '♻ Gateway restarted successfully. Your session continues.',  # Task 9
+    '♻️ Gateway online — Hermes is back and ready.',              # Task 9
 ])
 def test_english_literal_not_unwrapped(literal):
     assert literal not in _RUN_PY, f"unwrapped English literal still present: {literal!r}"
