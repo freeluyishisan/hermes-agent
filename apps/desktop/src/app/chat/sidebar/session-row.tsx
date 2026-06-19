@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
+import { useState } from 'react'
 
 import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
@@ -87,6 +88,10 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const [nativeDragging, setNativeDragging] = useState(false)
+
+  const rowDragging = dragging || nativeDragging
+
   const rowDragActivationProps =
     reorderable && dragHandleProps
       ? {
@@ -130,12 +135,13 @@ export function SidebarSessionRow({
           isWorking && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through).
-          dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
+          rowDragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
         data-session-row-chrome
         data-working={isWorking ? 'true' : undefined}
         draggable={!reorderable}
+        onDragEnd={() => setNativeDragging(false)}
         onDragStart={event => {
           // Reorder drags belong to dnd-kit (the grab handle) — cancel the
           // native drag so the two DnD systems don't fight. Reorderable rows
@@ -153,6 +159,7 @@ export function SidebarSessionRow({
             profile: session.profile || 'default',
             title
           })
+          setNativeDragging(true)
         }}
         ref={ref}
         style={style}
@@ -217,7 +224,7 @@ export function SidebarSessionRow({
               <Codicon
                 className={cn(
                   'absolute text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/handle:opacity-80 group-focus-within/handle:opacity-80 hover:text-(--ui-text-secondary)',
-                  dragging && 'text-(--ui-text-secondary) opacity-100'
+                  rowDragging && 'text-(--ui-text-secondary) opacity-100'
                 )}
                 name="grabber"
                 size="0.75rem"

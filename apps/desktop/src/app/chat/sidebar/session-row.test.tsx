@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { readSessionDrag } from '@/app/chat/composer/inline-refs'
 import type { SessionInfo } from '@/hermes'
 import { $attentionSessionIds } from '@/store/session'
 
@@ -55,6 +56,37 @@ function renderRow() {
   return { ...utils, dragHandleProps }
 }
 
+function renderNativeRow() {
+  return render(
+    <SidebarSessionRow
+      isPinned={false}
+      isSelected={false}
+      isWorking={false}
+      onArchive={vi.fn()}
+      onDelete={vi.fn()}
+      onPin={vi.fn()}
+      onResume={vi.fn()}
+      session={session()}
+    />
+  )
+}
+
+function fakeTransfer(data: Record<string, string> = {}) {
+  const store = { ...data }
+
+  return {
+    dropEffect: 'none',
+    effectAllowed: 'uninitialized',
+    getData: (type: string) => store[type] ?? '',
+    setData: (type: string, value: string) => {
+      store[type] = value
+    },
+    get types() {
+      return Object.keys(store)
+    }
+  } as unknown as DataTransfer
+}
+
 afterEach(() => {
   cleanup()
   $attentionSessionIds.set([])
@@ -86,5 +118,26 @@ describe('SidebarSessionRow reorder activation', () => {
     fireEvent.mouseDown(actions)
 
     expect(dragHandleProps.onMouseDown).not.toHaveBeenCalled()
+  })
+})
+
+describe('SidebarSessionRow native drag activation', () => {
+  it('shows native session drags as active until drag end', () => {
+    const { container } = renderNativeRow()
+    const chrome = container.querySelector('[data-session-row-chrome]') as HTMLElement
+    const transfer = fakeTransfer()
+
+    fireEvent.dragStart(chrome, { dataTransfer: transfer })
+
+    expect(readSessionDrag(transfer)).toMatchObject({
+      id: 's1',
+      profile: 'default',
+      title: 'Test session'
+    })
+    expect(chrome.className).toContain('cursor-grabbing')
+
+    fireEvent.dragEnd(chrome)
+
+    expect(chrome.className).not.toContain('cursor-grabbing')
   })
 })
