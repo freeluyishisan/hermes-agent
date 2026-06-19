@@ -4228,10 +4228,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
-            message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
-            )
+            message = t("gateway.steered_into_run", status_detail=status_detail)
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and

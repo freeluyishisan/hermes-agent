@@ -28,6 +28,7 @@ gateway:
   subagent_working:      "⏳ Subagent working{status_detail} — your message is queued for when it finishes (use /stop to cancel everything)."
   queued_next_turn:      "⏳ Queued for the next turn{status_detail}. I'll respond once the current task finishes."
   interrupting_task:     "⚡ Interrupting current task{status_detail}. I'll respond to your message shortly."
+  steered_into_run:      "⏩ Steered into current run{status_detail}. Your message arrives after the next tool call."
   long_running:          "⏳ Working — {minutes} min{status_detail}"
   no_activity_warning:   "⚠️ No activity for {minutes} min. If the agent does not respond soon, it will be timed out in {remaining} min. You can continue waiting or use /reset."
   provider_auth_failed:  "⚠️ Provider authentication failed. Check the configured credentials; raw provider details are in the gateway logs."
