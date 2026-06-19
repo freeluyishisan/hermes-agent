@@ -359,8 +359,9 @@ def _gateway_overrides() -> dict[str, str]:
             if isinstance(template, str):
                 result[f"gateway.{short_key}"] = template
     with _overrides_lock:
-        _overrides_cache = result
-    return result
+        if _overrides_cache is None:
+            _overrides_cache = result
+        return _overrides_cache
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
@@ -388,7 +389,7 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     English fallback.
     """
     target = _normalize_lang(lang) if lang else get_language()
-    # Check gateway overrides first (Task 3 populates these; stub returns {} now).
+    # Gateway overrides win over the catalog (populated from gateway.system_messages).
     value = _gateway_overrides().get(key)
     if value is None:
         catalog = _load_catalog(target)

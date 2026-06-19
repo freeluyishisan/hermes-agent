@@ -298,6 +298,7 @@ def test_override_beats_catalog(monkeypatch):
     )
     # goal_cleared exists in the real catalog; override must win, in any lang.
     assert i18n.t("gateway.goal_cleared", lang="ru") == "custom cleared"
+    i18n.reset_language_cache()
     assert i18n.t("gateway.goal_cleared", lang="en") == "custom cleared"
 
 
