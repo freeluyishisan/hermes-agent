@@ -249,3 +249,10 @@ def test_safe_format_unknown_with_format_spec_kept_raw():
 
 def test_safe_format_no_kwargs_is_identity():
     assert i18n._safe_format("plain {x}") == "plain {x}"
+
+
+def test_safe_format_real_value_shaped_like_placeholder_with_spec():
+    # A real kwarg value that looks like "{x}" must be formatted, not mistaken
+    # for a re-emitted missing token.
+    # "{x}" is 3 chars; right-justified to width 10 → 7 spaces + "{x}".
+    assert i18n._safe_format("{val:>10}", val="{x}") == "       {x}"

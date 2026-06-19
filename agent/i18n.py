@@ -250,6 +250,18 @@ def get_language() -> str:
     return DEFAULT_LANGUAGE
 
 
+class _MissingField(str):
+    """Sentinel returned by ``_SafeFormatter.get_value`` for an unknown key.
+
+    Subclasses ``str`` so the value already IS the ``"{key}"`` token and
+    normal string operations still work.  The distinct type lets
+    ``format_field`` unambiguously distinguish a re-emitted placeholder from
+    a real kwarg value that happens to look like ``"{...}"``.
+    """
+
+    __slots__ = ()
+
+
 class _SafeFormatter(string.Formatter):
     """``str.format`` that leaves unknown placeholders intact instead of raising.
 
@@ -263,27 +275,25 @@ class _SafeFormatter(string.Formatter):
 
     def get_value(self, key: Any, args: Any, kwargs: Any) -> Any:
         if isinstance(key, str):
-            return kwargs[key] if key in kwargs else "{" + key + "}"
+            return kwargs[key] if key in kwargs else _MissingField("{" + key + "}")
         try:
             return args[key]
         except (IndexError, KeyError):
-            return "{" + str(key) + "}"
+            return _MissingField("{" + str(key) + "}")
 
     def format_field(self, value: Any, format_spec: str) -> str:
-        # If get_value returned a literal re-emitted placeholder (e.g. "{n}"),
-        # and there's a format spec, reconstruct the full raw token "{n:02d}".
-        if (
-            isinstance(value, str)
-            and value.startswith("{")
-            and value.endswith("}")
-            and format_spec
-        ):
-            return value[:-1] + ":" + format_spec + "}"
+        # If get_value returned a sentinel for a missing placeholder, reconstruct
+        # the raw token -- with or without a format spec.
+        if isinstance(value, _MissingField):
+            if format_spec:
+                # Reconstruct e.g. "{n:02d}" from token "{n}" + spec "02d".
+                return value[:-1] + ":" + format_spec + "}"
+            return str(value)
         try:
             return super().format_field(value, format_spec)
         except (ValueError, TypeError):
-            # Re-emitted literal token met a format spec it can't satisfy
-            # (e.g. "{n:02d}" with n missing) -- keep it raw.
+            # A real value with an unsatisfiable format spec degrades without
+            # crashing (e.g. a non-numeric value passed where ":02d" expected).
             return str(value)
 
 
