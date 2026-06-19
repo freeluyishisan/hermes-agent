@@ -24,3 +24,26 @@ def _ru(monkeypatch):
 ])
 def test_provider_error_reply_localized(text, key):
     assert gw._gateway_provider_error_reply(text) == i18n.t(key, lang="ru")
+
+
+def test_session_too_large_localized():
+    out = gw._normalize_empty_agent_response(
+        {"failed": True, "error": "context window exceeded"}, "", history_len=0)
+    assert out == i18n.t("gateway.session_too_large", lang="ru")
+
+
+def test_request_failed_localized():
+    out = gw._normalize_empty_agent_response(
+        {"failed": True, "error": "boom"}, "", history_len=0)
+    assert out == i18n.t("gateway.request_failed", lang="ru", error="boom")
+
+
+def test_processing_stopped_localized():
+    out = gw._normalize_empty_agent_response(
+        {"api_calls": 1, "partial": True, "error": "midway"}, "")
+    assert out == i18n.t("gateway.processing_stopped", lang="ru", error="midway")
+
+
+def test_empty_response_localized():
+    out = gw._normalize_empty_agent_response({"api_calls": 2}, "")
+    assert out == i18n.t("gateway.empty_response", lang="ru")
