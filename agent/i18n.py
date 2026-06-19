@@ -85,6 +85,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
 
+_overrides_cache: dict[str, str] | None = None
+_overrides_lock = threading.Lock()
+
 
 def _locales_dir() -> Path:
     """Return the directory containing locale YAML files.
@@ -264,6 +267,9 @@ def reset_language_cache() -> None:
     agent_display_name.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
+    global _overrides_cache
+    with _overrides_lock:
+        _overrides_cache = None
 
 
 def get_language() -> str:
@@ -337,12 +343,24 @@ def _safe_format(template: str, **kwargs: Any) -> str:
 
 
 def _gateway_overrides() -> dict[str, str]:
-    """Return per-key gateway override strings from config.
+    """Load ``gateway.system_messages`` overrides as a ``{full_key: template}`` map.
 
-    Stub for Task 2 — always returns ``{}``; Task 3 will populate from config.
-    Kept as a module-level function so tests can patch it with ``monkeypatch``.
+    ``gateway.system_messages.restart_success`` -> ``gateway.restart_success``.
+    Cached for the process; ``reset_language_cache()`` clears it on config reload.
     """
-    return {}
+    global _overrides_cache
+    with _overrides_lock:
+        if _overrides_cache is not None:
+            return _overrides_cache
+    result: dict[str, str] = {}
+    raw = (_load_config_dict().get("gateway") or {}).get("system_messages") or {}
+    if isinstance(raw, dict):
+        for short_key, template in raw.items():
+            if isinstance(template, str):
+                result[f"gateway.{short_key}"] = template
+    with _overrides_lock:
+        _overrides_cache = result
+    return result
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
@@ -362,6 +380,12 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     -------
     The translated string, or the English fallback if the key is missing in
     the target language, or the bare key if English is also missing.
+
+    Notes
+    -----
+    ``gateway.*`` keys are checked against :func:`_gateway_overrides` first;
+    a matching override short-circuits both the language catalog and the
+    English fallback.
     """
     target = _normalize_lang(lang) if lang else get_language()
     # Check gateway overrides first (Task 3 populates these; stub returns {} now).

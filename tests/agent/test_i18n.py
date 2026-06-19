@@ -284,3 +284,46 @@ def test_t_auto_injects_name_when_template_uses_it(monkeypatch):
     monkeypatch.setattr(i18n, "_gateway_overrides",
                         lambda: {"gateway.restart_success": "{name} is back"})
     assert i18n.t("gateway.restart_success", lang="en") == "Ada is back"
+
+
+# ---------------------------------------------------------------------------
+# gateway.system_messages overrides -- resolution order: override > ru > en > key
+# ---------------------------------------------------------------------------
+
+def test_override_beats_catalog(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(
+        i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages": {"goal_cleared": "custom cleared"}}},
+    )
+    # goal_cleared exists in the real catalog; override must win, in any lang.
+    assert i18n.t("gateway.goal_cleared", lang="ru") == "custom cleared"
+    assert i18n.t("gateway.goal_cleared", lang="en") == "custom cleared"
+
+
+def test_override_falls_through_to_catalog_when_absent(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict", lambda: {})
+    assert i18n.t("gateway.goal_cleared", lang="en") == "✓ Goal cleared."
+
+
+def test_override_formats_with_safe_formatter(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(
+        i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages":
+                 {"long_running": "still going {minutes}m {bogus}"}}},
+    )
+    # {minutes} fills, unknown {bogus} stays literal -- no crash.
+    assert i18n.t("gateway.long_running", lang="en", minutes=7) == "still going 7m {bogus}"
+
+
+def test_override_cache_reset(monkeypatch):
+    i18n.reset_language_cache()
+    cfg = {"gateway": {"system_messages": {"goal_cleared": "v1"}}}
+    monkeypatch.setattr(i18n, "_load_config_dict", lambda: cfg)
+    assert i18n.t("gateway.goal_cleared", lang="en") == "v1"
+    cfg["gateway"]["system_messages"]["goal_cleared"] = "v2"
+    assert i18n.t("gateway.goal_cleared", lang="en") == "v1"  # cached
+    i18n.reset_language_cache()
+    assert i18n.t("gateway.goal_cleared", lang="en") == "v2"  # re-read
