@@ -1,6 +1,8 @@
 """Localization of gateway system messages wrapped via t() (issue #29846)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent import i18n
@@ -47,3 +49,14 @@ def test_processing_stopped_localized():
 def test_empty_response_localized():
     out = gw._normalize_empty_agent_response({"api_calls": 2}, "")
     assert out == i18n.t("gateway.empty_response", lang="ru")
+
+
+_RUN_PY = Path(gw.__file__).read_text(encoding="utf-8")
+
+# Exact English literals that must no longer appear unwrapped in gateway/run.py
+# (they now live only in locales/*.yaml). Tasks 8-10 will append their literals.
+@pytest.mark.parametrize("literal", [
+    '"(No response generated)"',   # Task 7
+])
+def test_english_literal_not_unwrapped(literal):
+    assert literal not in _RUN_PY, f"unwrapped English literal still present: {literal!r}"

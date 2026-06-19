@@ -11081,7 +11081,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 elif not images and not media_files:
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + "(No response generated)",
+                        content=header + t("gateway.no_response_generated"),
                         metadata=_thread_metadata,
                     )
 
@@ -11138,7 +11138,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n{t("gateway.no_response_generated")}',
                     metadata=_thread_metadata,
                 )
 
