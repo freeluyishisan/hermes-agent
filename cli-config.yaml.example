@@ -648,6 +648,20 @@ agent:
     hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
 
 # =============================================================================
+# Gateway
+# =============================================================================
+# gateway:
+#   # Custom wording for gateway system messages (issue #29846). Each key maps
+#   # to a catalog key gateway.<short_key>; the value is a template string.
+#   # Unknown {placeholders} are left literal (they never crash the gateway).
+#   # {name} auto-fills from ui.theme.branding.agent_name (fallback "Hermes").
+#   system_messages:
+#     restart_success:   "♻ {name} перезапущен. Сессия продолжается."
+#     gateway_online:    "♻️ Gateway снова онлайн — {name} готов к работе."
+#     interrupting_task: "⚡ Прерываю текущую задачу. Скоро отвечу."
+#     long_running:      "⏳ Работаю над задачей уже {minutes} мин."
+
+# =============================================================================
 # Toolsets
 # =============================================================================
 # Control which tools the agent has access to.
