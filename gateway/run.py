@@ -16166,7 +16166,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                _heartbeat_text = t(
+                    "gateway.long_running",
+                    minutes=_elapsed_mins,
+                    status_detail=_status_detail,
+                )
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -16279,10 +16283,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             try:
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    f"⚠️ No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    t(
+                                        "gateway.no_activity_warning",
+                                        minutes=_elapsed_warn,
+                                        remaining=_remaining_mins,
+                                    ),
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
