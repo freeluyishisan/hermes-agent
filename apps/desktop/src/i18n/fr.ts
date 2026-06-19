@@ -1800,6 +1800,7 @@ export const fr: Translations = {
       search: 'Rechercher des modèles',
       noModels: 'Aucun modèle trouvé',
       editModels: 'Modifier les modèles…',
+      refreshModels: 'Actualiser les modèles',
       fast: 'Rapide',
       medium: 'Moyen'
     },
