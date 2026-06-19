@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import string
 import sysconfig
 import threading
 from functools import lru_cache
@@ -249,6 +250,55 @@ def get_language() -> str:
     return DEFAULT_LANGUAGE
 
 
+class _SafeFormatter(string.Formatter):
+    """``str.format`` that leaves unknown placeholders intact instead of raising.
+
+    A user-supplied override template (``gateway.system_messages.*``) may contain
+    a placeholder the call site never provides -- a typo, or ``{minutes}`` on a
+    key that isn't the heartbeat.  Stock ``str.format`` raises on the first such
+    token and the whole string is lost.  This formatter substitutes the kwargs it
+    knows and re-emits the rest as the literal ``{token}`` so a broken template
+    degrades gracefully instead of crashing the gateway.
+    """
+
+    def get_value(self, key: Any, args: Any, kwargs: Any) -> Any:
+        if isinstance(key, str):
+            return kwargs[key] if key in kwargs else "{" + key + "}"
+        try:
+            return args[key]
+        except (IndexError, KeyError):
+            return "{" + str(key) + "}"
+
+    def format_field(self, value: Any, format_spec: str) -> str:
+        # If get_value returned a literal re-emitted placeholder (e.g. "{n}"),
+        # and there's a format spec, reconstruct the full raw token "{n:02d}".
+        if (
+            isinstance(value, str)
+            and value.startswith("{")
+            and value.endswith("}")
+            and format_spec
+        ):
+            return value[:-1] + ":" + format_spec + "}"
+        try:
+            return super().format_field(value, format_spec)
+        except (ValueError, TypeError):
+            # Re-emitted literal token met a format spec it can't satisfy
+            # (e.g. "{n:02d}" with n missing) -- keep it raw.
+            return str(value)
+
+
+_SAFE_FORMATTER = _SafeFormatter()
+
+
+def _safe_format(template: str, **kwargs: Any) -> str:
+    """Format ``template`` with ``kwargs``; unknown ``{tokens}`` stay literal."""
+    try:
+        return _SAFE_FORMATTER.vformat(template, (), kwargs)
+    except (KeyError, IndexError, ValueError) as exc:
+        logger.warning("i18n safe-format failed for template %r: %s", template, exc)
+        return template
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted key to the active language.
 
@@ -282,14 +332,7 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         value = key
 
     if format_kwargs:
-        try:
-            return value.format(**format_kwargs)
-        except (KeyError, IndexError, ValueError) as exc:
-            logger.warning(
-                "i18n format failed for key=%r lang=%r kwargs=%r: %s",
-                key, target, format_kwargs, exc,
-            )
-            return value
+        return _safe_format(value, **format_kwargs)
     return value
 
 

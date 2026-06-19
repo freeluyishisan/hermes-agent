@@ -227,3 +227,25 @@ def test_t_resolves_real_string_in_source_checkout():
     regressions independent of packaging."""
     assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
     assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"
+
+
+# ---------------------------------------------------------------------------
+# Safe formatter -- unknown placeholders must survive, not crash.
+# ---------------------------------------------------------------------------
+
+def test_safe_format_substitutes_known():
+    assert i18n._safe_format("hi {name}", name="Bob") == "hi Bob"
+
+
+def test_safe_format_keeps_unknown_placeholder():
+    # {city} is never supplied -- it must stay literal, and {name} still fills.
+    assert i18n._safe_format("{name} in {city}", name="Bob") == "Bob in {city}"
+
+
+def test_safe_format_unknown_with_format_spec_kept_raw():
+    # A format spec on a missing key (e.g. {n:02d}) must not raise.
+    assert i18n._safe_format("v={n:02d}", other=1) == "v={n:02d}"
+
+
+def test_safe_format_no_kwargs_is_identity():
+    assert i18n._safe_format("plain {x}") == "plain {x}"
