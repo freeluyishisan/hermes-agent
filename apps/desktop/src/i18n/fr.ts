@@ -52,8 +52,8 @@ export const fr: Translations = {
       startingDesktopConnection: 'Démarrage de la connexion bureau',
       startingHermesDesktop: 'Démarrage de Hermes Desktop…'
     },
-    connectingPrefix: 'CONN',
-    connectingTail: 'EXION',
+    connectingPrefix: 'Connexion',
+    connectingTail: '…',
     errors: {
       backgroundExited: 'Le processus Hermes en arrière-plan s\'est arrêté.',
       backgroundExitedDuringStartup: 'Le processus Hermes en arrière-plan s\'est arrêté pendant le démarrage.',

@@ -3,31 +3,9 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, isLocale, localeConfigValue, normalizeLocale } from './languages'
+import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
 import { setRuntimeI18nLocale } from './runtime'
 import type { Locale, Translations } from './types'
-
-const LS_KEY = 'hermes-desktop-locale'
-
-function readSavedLocale(): Locale {
-  try {
-    const raw = localStorage.getItem(LS_KEY)
-    if (raw && isLocale(raw)) {
-      return raw as Locale
-    }
-  } catch {
-    // localStorage unavailable (SSR, privacy mode)
-  }
-  return DEFAULT_LOCALE
-}
-
-function saveLocaleToStorage(locale: Locale) {
-  try {
-    localStorage.setItem(LS_KEY, locale)
-  } catch {
-    // ignore
-  }
-}
 
 export { LOCALE_META } from './languages'
 
@@ -50,6 +28,30 @@ const defaultConfigClient: I18nConfigClient = {
     }
 
     return saveHermesConfig(config)
+  }
+}
+
+const I18N_LOCALE_KEY = 'hermes-i18n-locale'
+
+function readStoredLocale(): unknown {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem(I18N_LOCALE_KEY)
+    }
+  } catch {
+    // localStorage may throw in sandboxed contexts.
+  }
+
+  return undefined
+}
+
+function storeLocale(locale: Locale): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(I18N_LOCALE_KEY, locale)
+    }
+  } catch {
+    // Silently ignore — in-memory state is the source of truth.
   }
 }
 
@@ -104,12 +106,9 @@ export interface I18nProviderProps {
 }
 
 export function I18nProvider({ children, configClient = defaultConfigClient, initialLocale }: I18nProviderProps) {
-  const [locale, setLocaleState] = useState<Locale>(() => {
-    if (initialLocale !== undefined && initialLocale !== null) {
-      return normalizeLocale(initialLocale)
-    }
-    return readSavedLocale()
-  })
+  const [locale, setLocaleState] = useState<Locale>(() =>
+    normalizeLocale(initialLocale ?? readStoredLocale())
+  )
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
@@ -119,7 +118,6 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   useEffect(() => {
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
-    saveLocaleToStorage(locale)
   }, [locale])
 
   useEffect(() => {
@@ -176,6 +174,8 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
         if (!result.ok) {
           throw new Error('Failed to save language')
         }
+
+        storeLocale(next)
       } catch (error) {
         const nextError = toError(error)
 
