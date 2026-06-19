@@ -256,3 +256,31 @@ def test_safe_format_real_value_shaped_like_placeholder_with_spec():
     # for a re-emitted missing token.
     # "{x}" is 3 chars; right-justified to width 10 → 7 spaces + "{x}".
     assert i18n._safe_format("{val:>10}", val="{x}") == "       {x}"
+
+
+# ---------------------------------------------------------------------------
+# {name} resolution
+# ---------------------------------------------------------------------------
+
+def test_agent_display_name_default(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict", lambda: {})
+    assert i18n.agent_display_name() == "Hermes"
+
+
+def test_agent_display_name_from_config(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(
+        i18n, "_load_config_dict",
+        lambda: {"ui": {"theme": {"branding": {"agent_name": "Hermione"}}}},
+    )
+    assert i18n.agent_display_name() == "Hermione"
+
+
+def test_t_auto_injects_name_when_template_uses_it(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "agent_display_name", lambda: "Ada")
+    # An override-style template with {name}, resolved with no explicit kwargs.
+    monkeypatch.setattr(i18n, "_gateway_overrides",
+                        lambda: {"gateway.restart_success": "{name} is back"})
+    assert i18n.t("gateway.restart_success", lang="en") == "Ada is back"

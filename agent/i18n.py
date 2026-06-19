@@ -208,6 +208,20 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
     # Non-string, non-dict leaves are ignored -- catalogs are text-only.
 
 
+def _load_config_dict() -> dict:
+    """Read config.yaml as a plain dict, or ``{}`` on any failure.
+
+    Single seam for every config-derived i18n value (language, agent name,
+    overrides) so tests can patch one function and callers stay crash-proof.
+    """
+    try:
+        from hermes_cli.config import load_config
+        return load_config() or {}
+    except Exception as exc:  # config missing / malformed / import error
+        logger.debug("i18n could not read config.yaml: %s", exc)
+        return {}
+
+
 @lru_cache(maxsize=1)
 def _config_language_cached() -> str | None:
     """Read ``display.language`` from config.yaml once per process.
@@ -217,15 +231,27 @@ def _config_language_cached() -> str | None:
     ``reset_language_cache()`` clears this when config changes at runtime
     (e.g. after the setup wizard).
     """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        lang = (cfg.get("display") or {}).get("language")
-        if lang:
-            return _normalize_lang(lang)
-    except Exception as exc:
-        logger.debug("Could not read display.language from config: %s", exc)
+    cfg = _load_config_dict()
+    lang = (cfg.get("display") or {}).get("language")
+    if lang:
+        return _normalize_lang(lang)
     return None
+
+
+@lru_cache(maxsize=1)
+def agent_display_name() -> str:
+    """Configured agent name for ``{name}`` substitution; ``"Hermes"`` fallback.
+
+    Sourced from ``ui.theme.branding.agent_name`` (the only user-set agent name
+    in config; unused elsewhere in the gateway, so reusing it is safe).
+    """
+    branding = (
+        ((_load_config_dict().get("ui") or {}).get("theme") or {}).get("branding") or {}
+    )
+    name = branding.get("agent_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return "Hermes"
 
 
 def reset_language_cache() -> None:
@@ -235,6 +261,7 @@ def reset_language_cache() -> None:
     needs to pick up a changed ``display.language`` without restart.
     """
     _config_language_cached.cache_clear()
+    agent_display_name.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
 
@@ -309,6 +336,15 @@ def _safe_format(template: str, **kwargs: Any) -> str:
         return template
 
 
+def _gateway_overrides() -> dict[str, str]:
+    """Return per-key gateway override strings from config.
+
+    Stub for Task 2 — always returns ``{}``; Task 3 will populate from config.
+    Kept as a module-level function so tests can patch it with ``monkeypatch``.
+    """
+    return {}
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted key to the active language.
 
@@ -328,8 +364,11 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     the target language, or the bare key if English is also missing.
     """
     target = _normalize_lang(lang) if lang else get_language()
-    catalog = _load_catalog(target)
-    value = catalog.get(key)
+    # Check gateway overrides first (Task 3 populates these; stub returns {} now).
+    value = _gateway_overrides().get(key)
+    if value is None:
+        catalog = _load_catalog(target)
+        value = catalog.get(key)
 
     if value is None and target != DEFAULT_LANGUAGE:
         # Fall through to English rather than showing a key path to the user.
@@ -340,6 +379,9 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         # crash anything; it just looks ugly until someone fixes it.
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
+
+    if "{name}" in value and "name" not in format_kwargs:
+        format_kwargs = {**format_kwargs, "name": agent_display_name()}
 
     if format_kwargs:
         return _safe_format(value, **format_kwargs)
@@ -352,4 +394,5 @@ __all__ = [
     "t",
     "get_language",
     "reset_language_cache",
+    "agent_display_name",
 ]
