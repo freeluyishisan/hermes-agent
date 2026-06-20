@@ -4358,6 +4358,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else t("gateway.shutdown_shutting_down")
         )
 
+        if not msg.strip():
+            return
+
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
             source = None
@@ -12340,11 +12343,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 content=t("gateway.restart_success"),
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
+            # _send_unless_empty returns None when the content is suppressed/empty
+            # (i.e. the key is muted or translates to blank). Do NOT log "Sent".
+            if result is None:
+                logger.debug("Restart notification suppressed (empty/muted)")
+                return None
             # adapter.send() catches provider errors (e.g. "Chat not found")
             # and returns SendResult(success=False) rather than raising, so
             # we must inspect the result before claiming success — otherwise
             # the log line is misleading and hides real delivery failures.
-            if result is not None and getattr(result, "success", True) is False:
+            if getattr(result, "success", True) is False:
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,

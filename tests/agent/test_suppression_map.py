@@ -12,6 +12,7 @@ EXPECTED = {
     },
     "lifecycle": {
         "gateway.restart_success", "gateway.gateway_online",
+        "gateway.shutdown_restarting", "gateway.shutdown_shutting_down",
     },
     "info": {
         "gateway.codex_gpt55_autoraise_notice", "gateway.self_review_header",

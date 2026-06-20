@@ -100,6 +100,8 @@ GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
     # lifecycle — gateway daemon lifecycle notifications
     "gateway.restart_success": "lifecycle",
     "gateway.gateway_online": "lifecycle",
+    "gateway.shutdown_restarting": "lifecycle",
+    "gateway.shutdown_shutting_down": "lifecycle",
     # info — one-shot notices
     "gateway.codex_gpt55_autoraise_notice": "info",
     "gateway.self_review_header": "info",
