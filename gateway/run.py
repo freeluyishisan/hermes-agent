@@ -406,6 +406,18 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+async def _send_unless_empty(adapter, *, chat_id, content, **kwargs):
+    """Send via adapter only when content has non-whitespace text.
+
+    A category-suppressed system message resolves to "" via i18n.t(); routing
+    its send through here makes suppression a clean no-op instead of an empty
+    delivery attempt.
+    """
+    if not str(content or "").strip():
+        return None
+    return await adapter.send(chat_id, content, **kwargs)
+
+
 def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_message_id: Any) -> Optional[str]:
     """Return thread/root ID that progress/status bubbles should target."""
     platform_value = getattr(platform, "value", platform)
@@ -4080,18 +4092,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 message = t("gateway.busy_not_accepting_turn", gerund=self._status_action_gerund())
 
-            await adapter._send_with_retry(
-                chat_id=event.source.chat_id,
-                content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
-                metadata=thread_meta,
-            )
+            if message:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=message,
+                    reply_to=(
+                        reply_anchor
+                        if event.source.platform == Platform.TELEGRAM
+                        and event.source.chat_type == "dm"
+                        and event.source.thread_id
+                        else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                    ),
+                    metadata=thread_meta,
+                )
             return True
 
         # Normal busy case (agent actively running a task)
@@ -4238,6 +4251,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message = t("gateway.queued_next_turn", status_detail=status_detail)
         else:
             message = t("gateway.interrupting_task", status_detail=status_detail)
+
+        if not message:
+            return True
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
@@ -12318,9 +12334,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
-                str(chat_id),
-                t("gateway.restart_success"),
+            result = await _send_unless_empty(
+                adapter,
+                chat_id=str(chat_id),
+                content=t("gateway.restart_success"),
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
@@ -12362,6 +12379,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = t("gateway.gateway_online")
+        if not message:
+            return delivered
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
@@ -16103,6 +16122,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     minutes=_elapsed_mins,
                     status_detail=_status_detail,
                 )
+                if not _heartbeat_text:
+                    continue
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -16213,9 +16234,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
                             try:
-                                await _warn_adapter.send(
-                                    source.chat_id,
-                                    t(
+                                await _send_unless_empty(
+                                    _warn_adapter,
+                                    chat_id=source.chat_id,
+                                    content=t(
                                         "gateway.no_activity_warning",
                                         minutes=_elapsed_warn,
                                         remaining=_remaining_mins,

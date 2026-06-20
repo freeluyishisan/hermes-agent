@@ -656,9 +656,9 @@ def _run_review_in_thread(
             _bg_cb = agent.background_review_callback
             if _bg_cb:
                 try:
-                    _bg_cb(
-                        t("gateway.self_review_header", summary=summary)
-                    )
+                    _bg_review_text = t("gateway.self_review_header", summary=summary)
+                    if _bg_review_text:
+                        _bg_cb(_bg_review_text)
                 except Exception:
                     pass
 
