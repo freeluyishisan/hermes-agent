@@ -36,6 +36,15 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if not normalized_model.startswith("gemini"):
         return None
 
+    # The unversioned Gemini 3 preview models (e.g. gemini-3-flash-preview) on
+    # the v1beta endpoint reject thinking_config *entirely* with HTTP 400
+    # "Unknown name 'thinking_config': Cannot find field" — every form fails,
+    # including the bare {"includeThoughts": False}. Only versioned 3.x models
+    # (gemini-3.1-*, gemini-3.5-*, …) support the field, so never inject it for
+    # an unversioned gemini-3 model regardless of reasoning config. (#25123)
+    if normalized_model.startswith("gemini-3") and not normalized_model.startswith("gemini-3."):
+        return None
+
     if reasoning_config.get("enabled") is False:
         # Gemini can hide thought parts even when internal thinking still
         # happens; omit thinkingLevel to avoid model-specific validation quirks.
@@ -59,9 +68,16 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
     # is stricter (low/high). Clamp Hermes' wider effort set to what each
     # family accepts so we never forward an undocumented level verbatim.
-    if normalized_model.startswith(("gemini-3", "gemini-3.1")):
+    # Only versioned 3.X models (gemini-3.1-*, gemini-3.5-*, …) support
+    # thinkingLevel — the old unversioned preview (gemini-3-flash-preview)
+    # rejects thinking_config entirely with HTTP 400. (#25123)
+    if normalized_model.startswith("gemini-3."):
         if "flash" in normalized_model:
-            if effort in {"minimal", "low"}:
+            # Gemini 3.5 Flash supports all four levels; "minimal" is optimised
+            # for chat-like latency and is distinct from "low". (#25123, docs)
+            if effort == "minimal":
+                thinking_config["thinkingLevel"] = "minimal"
+            elif effort == "low":
                 thinking_config["thinkingLevel"] = "low"
             elif effort in {"high", "xhigh"}:
                 thinking_config["thinkingLevel"] = "high"
@@ -423,7 +439,7 @@ class ChatCompletionsTransport(ProviderTransport):
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
-        if provider_name == "gemini":
+        if provider_name in {"gemini", "google", "google-gemini", "google-ai-studio"}:
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if _is_gemini_openai_compat_base_url(base_url):
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
