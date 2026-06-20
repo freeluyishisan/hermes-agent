@@ -45,6 +45,7 @@ const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-e
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
 const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
+const { isBlockedUrl, MAX_DOWNLOAD_BYTES, MAX_FETCH_BYTES } = require('./url-guard.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
@@ -3558,6 +3559,7 @@ function fetchHtmlTitleWithRenderer(rawUrl) {
 const usableTitle = value => (value && !TITLE_ERROR_RE.test(value) ? value : '')
 
 function fetchLinkTitle(rawUrl) {
+  if (isBlockedUrl(String(rawUrl || ""))) return Promise.resolve("")
   const url = String(rawUrl || '').trim()
   const key = canonicalTitleCacheKey(url)
   if (!key) return Promise.resolve('')
@@ -3596,6 +3598,7 @@ async function resourceBufferFromUrl(rawUrl) {
     return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
   }
 
+  if (isBlockedUrl(rawUrl)) throw new Error("Blocked: private URL")
   const parsed = new URL(rawUrl)
   const client = parsed.protocol === 'https:' ? https : http
   return new Promise((resolve, reject) => {
@@ -4433,6 +4436,18 @@ function openOauthLoginWindow(baseUrl) {
     win.webContents.on('did-navigate', () => void checkCookie())
     win.webContents.on('did-redirect-navigation', () => void checkCookie())
     win.webContents.on('did-frame-navigate', () => void checkCookie())
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      openExternalUrl(url)
+      return { action: 'deny' }
+    })
+    win.webContents.on('will-navigate', (event, url) => {
+      try {
+        const parsed = new URL(url)
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          event.preventDefault()
+        }
+      } catch { event.preventDefault() }
+    })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     win.on('closed', () => {
@@ -4675,11 +4690,15 @@ function readDesktopConnectionConfig() {
   return config
 }
 
+let _configWriteLock = Promise.resolve()
 function writeDesktopConnectionConfig(config) {
-  fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
-  writeFileAtomic(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
-  connectionConfigCache = config
-  connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
+  _configWriteLock = _configWriteLock.then(() => {
+    fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
+    connectionConfigCache = config
+    connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
+  }).catch(() => {})
+  return _configWriteLock
 }
 
 // Returns the desktop's chosen profile name, or null when unset. "default" is
@@ -5631,8 +5650,16 @@ function wireCommonWindowHandlers(win) {
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event, url) => {
-    if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
+    if (DEV_SERVER && url.startsWith(DEV_SERVER)) {
       return
+    }
+    if (!DEV_SERVER && url.startsWith('file:')) {
+      try {
+        const allowedBase = resolveRendererIndex()
+        if (allowedBase && url.startsWith(allowedBase.replace(/index.html.*$/, ''))) {
+          return
+        }
+      } catch {}
     }
 
     event.preventDefault()
@@ -7090,33 +7117,32 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   return { cwd, id, shell: name }
 })
 
-ipcMain.handle('hermes:terminal:write', (_event, id, data) => {
+ipcMain.handle('hermes:terminal:write', (event, id, data) => {
   const sessionInfo = terminalSessions.get(String(id || ''))
-
-  if (!sessionInfo) {
+  if (!sessionInfo || sessionInfo.webContentsId !== event.sender.id) {
     return false
   }
-
   sessionInfo.pty.write(String(data || ''))
-
   return true
 })
 
-ipcMain.handle('hermes:terminal:resize', (_event, id, size = {}) => {
+ipcMain.handle('hermes:terminal:resize', (event, id, size = {}) => {
   const sessionInfo = terminalSessions.get(String(id || ''))
-
-  if (!sessionInfo) {
+  if (!sessionInfo || sessionInfo.webContentsId !== event.sender.id) {
     return false
   }
-
   const cols = Math.max(2, Number.parseInt(String(size?.cols || 80), 10) || 80)
   const rows = Math.max(2, Number.parseInt(String(size?.rows || 24), 10) || 24)
-
   sessionInfo.pty.resize(cols, rows)
-
   return true
 })
-ipcMain.handle('hermes:terminal:dispose', (_event, id) => disposeTerminalSession(String(id || '')))
+ipcMain.handle('hermes:terminal:dispose', (event, id) => {
+  const sessionInfo = terminalSessions.get(String(id || ''))
+  if (sessionInfo && sessionInfo.webContentsId !== event.sender.id) {
+    return false
+  }
+  return disposeTerminalSession(String(id || ''))
+})
 
 ipcMain.handle('hermes:updates:check', async () =>
   checkUpdates().catch(error => ({
@@ -7140,6 +7166,9 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+  if (!/^[A-Za-z0-9._\/-]{1,200}$/.test(branch)) {
+    throw new Error('Invalid branch name')
+  }
   writeDesktopUpdateConfig({ branch })
   return { branch }
 })
@@ -7474,7 +7503,10 @@ const _gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!_gotSingleInstanceLock) {
   app.quit()
 } else {
-  app.on('second-instance', (_event, argv) => {
+  process.on('unhandledRejection', (err) => { console.error('[hermes-main] Unhandled rejection:', err); });
+process.on('uncaughtException', (err) => { console.error('[hermes-main] Uncaught exception:', err); });
+
+app.on('second-instance', (_event, argv) => {
     const url = _extractDeepLink(argv)
     if (url) handleDeepLink(url)
     else if (mainWindow) {
@@ -7574,6 +7606,10 @@ app.on('before-quit', () => {
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
+  }
+  if (poolIdleReaper) {
+    clearInterval(poolIdleReaper)
+    poolIdleReaper = null
   }
   stopAllPoolBackends()
 })
