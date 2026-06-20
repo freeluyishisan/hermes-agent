@@ -87,6 +87,7 @@ import {
   $messagingSessions,
   $messagingTruncated,
   $selectedStoredSessionId,
+  $sessionPresence,
   $sessionProfileTotals,
   $sessions,
   $sessionsLoading,
@@ -94,6 +95,7 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
+import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
@@ -303,6 +305,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
+  onOpenPresenceSession: (record: SessionPresenceRecord) => void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
@@ -317,6 +320,7 @@ export function ChatSidebar({
   onLoadMoreSessions,
   onLoadMoreProfileSessions,
   onLoadMoreMessaging,
+  onOpenPresenceSession,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -346,6 +350,7 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
+  const sessionPresence = useStore($sessionPresence)
   const workingSessionIds = useStore($workingSessionIds)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
@@ -363,6 +368,7 @@ export function ChatSidebar({
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
+  const [liveOpen, setLiveOpen] = useState(true)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
   const [messagingLoadMorePending, setMessagingLoadMorePending] = useState<Record<string, boolean>>({})
   const messagingOpenIds = useStore($sidebarMessagingOpenIds)
@@ -423,7 +429,19 @@ export function ChatSidebar({
     [visibleSessions]
   )
 
-  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
+  const visibleSessionPresence = useMemo(
+    () => [...sessionPresence].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)),
+    [sessionPresence]
+  )
+
+  const workingSessionIdSet = useMemo(
+    () =>
+      new Set([
+        ...workingSessionIds,
+        ...visibleSessionPresence.map(record => record.session_key || record.session_id).filter(Boolean)
+      ]),
+    [visibleSessionPresence, workingSessionIds]
+  )
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
@@ -533,6 +551,7 @@ export function ChatSidebar({
 
     if (!next.length && agentOrderIds.length) {
       setSidebarSessionOrderIds([])
+
       return
     }
 
@@ -911,6 +930,17 @@ export function ChatSidebar({
               />
             )}
 
+            {!trimmedQuery && visibleSessionPresence.length > 0 && (
+              <SidebarPresenceSection
+                activeSessionId={activeSidebarSessionId}
+                labelMeta={String(visibleSessionPresence.length)}
+                onOpenPresenceSession={onOpenPresenceSession}
+                onToggle={() => setLiveOpen(!liveOpen)}
+                open={liveOpen}
+                records={visibleSessionPresence}
+              />
+            )}
+
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
@@ -1151,6 +1181,97 @@ function SidebarPinnedEmptyState() {
       </span>
       <span>{t.sidebar.shiftClickHint}</span>
     </div>
+  )
+}
+
+interface SidebarPresenceSectionProps {
+  activeSessionId: null | string
+  labelMeta: React.ReactNode
+  onOpenPresenceSession: (record: SessionPresenceRecord) => void
+  onToggle: () => void
+  open: boolean
+  records: SessionPresenceRecord[]
+}
+
+function SidebarPresenceSection({
+  activeSessionId,
+  labelMeta,
+  onOpenPresenceSession,
+  onToggle,
+  open,
+  records
+}: SidebarPresenceSectionProps) {
+  return (
+    <SidebarGroup className="shrink-0 p-0 pb-1">
+      <SidebarSectionHeader label="Live" meta={labelMeta} onToggle={onToggle} open={open} />
+      {open && (
+        <SidebarGroupContent className="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1">
+          {records.map(record => {
+            const target = record.session_key?.trim() || record.session_id
+
+            return (
+              <SidebarPresenceRow
+                active={target === activeSessionId}
+                key={`${record.instance_id || record.host || 'instance'}:${record.session_id}`}
+                onOpen={() => onOpenPresenceSession(record)}
+                record={record}
+              />
+            )
+          })}
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
+  )
+}
+
+function SidebarPresenceRow({
+  active,
+  onOpen,
+  record
+}: {
+  active: boolean
+  onOpen: () => void
+  record: SessionPresenceRecord
+}) {
+  const title = record.title?.trim() || record.session_key?.trim() || record.session_id
+  const model = record.model?.trim()
+  const origin = [record.host, record.client || record.source].filter(Boolean).join(' / ')
+  const detail = [model, origin].filter(Boolean).join('  ')
+  const status = record.status?.trim().toLowerCase() || 'idle'
+  const working = status !== 'idle' && status !== 'current'
+
+  return (
+    <button
+      aria-label={`Open live session ${title}`}
+      className={cn(
+        'group flex min-h-9 flex-col justify-center rounded-md bg-transparent px-2 py-1 text-left transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+        active && 'bg-(--ui-row-active-background)'
+      )}
+      onClick={onOpen}
+      title={origin ? `${title} (${origin})` : title}
+      type="button"
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="grid w-3.5 shrink-0 place-items-center">
+          <span
+            className={cn(
+              'rounded-full',
+              working
+                ? 'relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)]'
+                : 'size-1 bg-(--ui-text-quaternary) opacity-80'
+            )}
+          />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground">
+          {title}
+        </span>
+      </span>
+      {detail && (
+        <span className="ml-5 min-w-0 truncate text-[0.625rem] leading-3 text-(--ui-text-tertiary)">
+          {detail}
+        </span>
+      )}
+    </button>
   )
 }
 
