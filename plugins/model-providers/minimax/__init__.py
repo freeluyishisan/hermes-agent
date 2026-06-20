@@ -27,7 +27,21 @@ def _is_minimax_m3(model: str | None) -> bool:
 
 
 class MiniMaxProfile(ProviderProfile):
-    """MiniMax — M3 OpenAI-compatible reasoning controls."""
+    """MiniMax — M3 OpenAI-compatible reasoning controls, plus native
+    Anthropic-wire ``cache_control`` support (0.1× read pricing, 5-minute TTL)
+    for the Claude / MiniMax-M2.x models.
+    Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+    """
+
+    def cache_strategy_for(self, model: str):
+        from agent.prompt_cache_strategy import (
+            AnthropicInlineCacheStrategy,
+            NoCacheStrategy,
+        )
+        m = (model or "").lower()
+        if "claude" in m or "minimax" in m:
+            return AnthropicInlineCacheStrategy(layout="native")
+        return NoCacheStrategy()
 
     def build_api_kwargs_extras(
         self,

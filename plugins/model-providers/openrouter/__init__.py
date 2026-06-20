@@ -47,6 +47,17 @@ def _anthropic_reasoning_is_mandatory(model: str | None) -> bool:
 class OpenRouterProfile(ProviderProfile):
     """OpenRouter aggregator — provider preferences, reasoning config passthrough."""
 
+    def cache_strategy_for(self, model: str):
+        from agent.prompt_cache_strategy import (
+            AnthropicInlineCacheStrategy,
+            NoCacheStrategy,
+        )
+        # OpenRouter routes Claude to Anthropic's backend and forwards
+        # cache_control markers via the OpenAI-wire envelope layout.
+        if "claude" in (model or "").lower():
+            return AnthropicInlineCacheStrategy(layout="envelope")
+        return NoCacheStrategy()
+
     def fetch_models(
         self,
         *,
