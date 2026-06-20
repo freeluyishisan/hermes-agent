@@ -254,3 +254,110 @@ def test_batchC_key_resolves_in_russian(key, kwargs):
     """Each Batch C key must resolve (not raise KeyError) in Russian."""
     result = i18n.t(key, lang="ru", **kwargs)
     assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
+
+
+# ---- Batch D: Telegram platform UI strings ----
+
+_TELEGRAM_PY = Path(__file__).parents[2] / "gateway" / "platforms" / "telegram.py"
+_TELEGRAM_SRC = _TELEGRAM_PY.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("key,kwargs", [
+    ("gateway.tg_update_prompt_header", {}),
+    ("gateway.tg_btn_yes", {}),
+    ("gateway.tg_btn_no", {}),
+    ("gateway.tg_approval_header", {}),
+    ("gateway.tg_btn_allow_once", {}),
+    ("gateway.tg_btn_allow_session", {}),
+    ("gateway.tg_btn_allow_always", {}),
+    ("gateway.tg_btn_deny", {}),
+    ("gateway.tg_btn_approve_once", {}),
+    ("gateway.tg_btn_always_approve", {}),
+    ("gateway.tg_btn_cancel", {}),
+    ("gateway.tg_btn_cancel_x", {}),
+    ("gateway.tg_btn_prev", {}),
+    ("gateway.tg_btn_next", {}),
+    ("gateway.tg_btn_back", {}),
+    ("gateway.tg_btn_switch_anyway", {}),
+    ("gateway.tg_more_available", {"n": 5}),
+    ("gateway.tg_model_config_header", {}),
+    ("gateway.tg_picker_expired", {}),
+    ("gateway.tg_provider_not_found", {}),
+    ("gateway.tg_invalid_page", {}),
+    ("gateway.tg_invalid_selection", {}),
+    ("gateway.tg_invalid_model_index", {}),
+    ("gateway.tg_picker_expired_short", {}),
+    ("gateway.tg_switch_failed", {}),
+    ("gateway.tg_model_switched", {}),
+    ("gateway.tg_confirm_expensive", {}),
+    ("gateway.tg_group_not_found", {}),
+    ("gateway.tg_model_selection_cancelled", {}),
+    ("gateway.tg_expensive_warning_header", {}),
+    ("gateway.tg_approved_session", {}),
+    ("gateway.tg_approved_permanently", {}),
+    ("gateway.tg_always_approve_label", {}),
+    ("gateway.tg_cancelled_label", {}),
+    ("gateway.tg_not_authorized_approve", {}),
+    ("gateway.tg_not_authorized_prompt", {}),
+    ("gateway.tg_not_authorized_update", {}),
+    ("gateway.tg_not_authorized_email", {}),
+    ("gateway.tg_type_answer", {}),
+    ("gateway.tg_invalid_choice", {}),
+    ("gateway.tg_clarify_resolved", {"resolved_text": "Yes"}),
+    ("gateway.tg_sent_answer", {"answer": "y"}),
+    ("gateway.tg_update_answered", {"label": "Yes"}),
+    ("gateway.tg_gmail_invalid_data", {}),
+    ("gateway.tg_gmail_unknown_verb", {"verb": "send"}),
+    ("gateway.tg_gmail_script_missing", {"script_name": "send.sh"}),
+    ("gateway.tg_gmail_verb_failed", {"verb": "send", "detail": "error msg"}),
+    ("gateway.tg_gmail_verb_timed_out", {"verb": "send"}),
+    ("gateway.tg_gmail_verb_error", {"verb": "send", "error": "timeout"}),
+    ("gateway.tg_invalid_approval_data", {}),
+])
+def test_batchD_key_resolves_in_russian(key, kwargs):
+    """Each Batch D key must resolve (not raise KeyError) in Russian."""
+    result = i18n.t(key, lang="ru", **kwargs)
+    assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
+
+
+@pytest.mark.parametrize("literal", [
+    # Strings now wrapped with t() in telegram.py
+    '"⚕ *Update needs your input:*\\n\\n"',
+    '"✓ Yes"',
+    '"✗ No"',
+    '"⚠️ <b>Command Approval Required</b>\\n\\n"',
+    '"✅ Allow Once"',
+    '"✅ Session"',
+    '"✅ Always"',
+    '"❌ Deny"',
+    '"✅ Approve Once"',
+    '"🔒 Always Approve"',
+    '"❌ Cancel"',
+    '"✗ Cancel"',
+    '"◀ Prev"',
+    '"Next ▶"',
+    '"◀ Back"',
+    '"Switch anyway"',
+    '"⚙ *Model Configuration*\\n\\n"',
+    '"Picker expired — use /model again."',
+    '"Provider not found."',
+    '"Invalid page."',
+    '"Switch failed."',
+    '"Model switched!"',
+    '"Confirm expensive model"',
+    '"Group not found."',
+    '"Model selection cancelled."',
+    '"⚠ *Expensive Model Warning*\\n\\n',
+    '"Invalid approval data."',
+    '"⛔ You are not authorized to approve commands."',
+    '"⛔ You are not authorized to answer this prompt."',
+    '"⛔ You are not authorized to answer update prompts."',
+    '"⛔ You are not authorized to act on this email."',
+    '"✏️ Type your answer in the chat."',
+    '"Invalid choice."',
+    '"Invalid gmail-triage data."',
+])
+def test_batchD_literal_not_unwrapped_in_telegram(literal):
+    assert literal not in _TELEGRAM_SRC, (
+        f"unwrapped English literal still present in telegram.py: {literal!r}"
+    )
