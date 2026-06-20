@@ -1287,6 +1287,12 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        # codex_gpt55_autoraise_announce: when True (default) show a one-time
+        # notice (CLI print + gateway replay) the first time the autoraise above
+        # kicks in. Set False to KEEP the raised window but suppress the notice —
+        # for gateway/product installs that don't want system chatter in user
+        # DMs. No effect on the raise itself, only on the notice.
+        "codex_gpt55_autoraise_announce": True,
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

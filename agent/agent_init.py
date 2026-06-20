@@ -1296,11 +1296,18 @@ def init_agent(
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
+    # Whether to ANNOUNCE the autoraise. The raise is behavioural and always
+    # applies (see compression_threshold below); this flag governs only the
+    # one-time user-facing notice, so a gateway/product install can keep the
+    # larger window without surfacing system chatter in user chats.
+    _codex_gpt55_autoraise_announce = str(
+        _compression_cfg.get("codex_gpt55_autoraise_announce", True)
+    ).lower() in {"true", "1", "yes"}
     agent._compression_threshold_autoraised = None
     try:
         from agent.auxiliary_client import (
             _compression_threshold_for_model as _cthresh_fn,
-            _is_codex_gpt55 as _is_codex_gpt55_fn,
+            _should_announce_codex_gpt55_autoraise as _should_announce_fn,
         )
         _model_cthresh = _cthresh_fn(
             agent.model,
@@ -1313,10 +1320,14 @@ def init_agent(
             # Notify only for the Codex gpt-5.5 autoraise (the Arcee Trinity
             # override is a long-standing silent default). Skip the notice when
             # the user's global threshold already meets/exceeds the raised
-            # value, since nothing actually changed for them.
-            if (
-                _is_codex_gpt55_fn(agent.model, agent.provider)
-                and _model_cthresh > _prev_threshold + 1e-9
+            # value (nothing changed for them) OR when the announce flag is
+            # off (keep the raised window, suppress the chatter).
+            if _should_announce_fn(
+                agent.model,
+                agent.provider,
+                _prev_threshold,
+                _model_cthresh,
+                announce_enabled=_codex_gpt55_autoraise_announce,
             ):
                 agent._compression_threshold_autoraised = {
                     "from": _prev_threshold,

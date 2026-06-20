@@ -281,6 +281,37 @@ def _compression_threshold_for_model(
         return _CODEX_GPT55_COMPACTION_THRESHOLD
     return None
 
+
+def _should_announce_codex_gpt55_autoraise(
+    model: Optional[str],
+    provider: Optional[str],
+    prev_threshold: float,
+    new_threshold: Optional[float],
+    *,
+    announce_enabled: bool = True,
+) -> bool:
+    """Whether to surface the one-time Codex gpt-5.5 autoraise notice.
+
+    The threshold raise itself is behavioural and applies regardless of this
+    function; this governs ONLY the user-facing notice. A deployment can
+    therefore keep the larger gpt-5.5 window while suppressing the chat
+    notice (e.g. a gateway/product install that does not want system chatter
+    in user DMs) by passing ``announce_enabled=False``.
+
+    Returns True only when announcing is enabled, the model is the Codex
+    gpt-5.5 route, and the threshold actually increased (never announce a
+    no-op, e.g. when the user's global threshold already meets the raised
+    value).
+    """
+    if not announce_enabled:
+        return False
+    if new_threshold is None:
+        return False
+    if not _is_codex_gpt55(model, provider):
+        return False
+    return new_threshold > prev_threshold + 1e-9
+
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 def _get_aux_model_for_provider(provider_id: str) -> str:
     """Return the cheap auxiliary model for a provider.
