@@ -696,6 +696,23 @@ def _check_cua_driver_asset_for_arch() -> bool:
     return True
 
 
+def _check_applications_writable() -> bool:
+    """Return True if ``/Applications`` is writable by the current user.
+
+    The upstream cua-driver installer writes its app bundle to
+    ``/Applications/CuaDriver.app`` with no sudo and no fallback
+    directory.  On a standard (non-admin) macOS account this always
+    fails, printing a noisy warning on every ``hermes update``.
+    Checking beforehand lets us skip the attempt cleanly.
+    """
+    import os
+
+    try:
+        return os.access("/Applications", os.W_OK)
+    except OSError:
+        return False
+
+
 def install_cua_driver(upgrade: bool = False) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
 
@@ -736,6 +753,14 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             return False
         if not _check_cua_driver_asset_for_arch():
             return False
+        if not _check_applications_writable():
+            _print_warning(
+                "    /Applications is not writable — skipping cua-driver install."
+            )
+            _print_info(
+                "    Run as an admin or grant write access to /Applications."
+            )
+            return False
         return _run_cua_driver_installer(label="Installing")
 
     # Already installed and caller didn't ask to upgrade → just confirm.
@@ -759,6 +784,12 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         return bool(binary)
 
     if not _check_cua_driver_asset_for_arch():
+        return bool(binary)
+
+    if not _check_applications_writable():
+        _print_info(
+            "    /Applications is not writable — skipping cua-driver refresh."
+        )
         return bool(binary)
 
     if binary:

@@ -46,6 +46,8 @@ class TestInstallCuaDriverUpgrade:
                                                  if n in {"cua-driver", "curl"} else None), \
              patch.object(tools_config, "_check_cua_driver_asset_for_arch",
                           return_value=True), \
+             patch.object(tools_config, "_check_applications_writable",
+                          return_value=True), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
              patch("subprocess.run"):
@@ -61,6 +63,8 @@ class TestInstallCuaDriverUpgrade:
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
              patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_check_applications_writable",
                           return_value=True), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner:
@@ -86,6 +90,8 @@ class TestInstallCuaDriverUpgrade:
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
              patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_check_applications_writable",
                           return_value=True), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner:
@@ -208,5 +214,79 @@ class TestCheckCuaDriverAssetForArch:
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \
              patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=True) is False
+            runner.assert_not_called()
+
+
+class TestCheckApplicationsWritable:
+    def test_returns_true_when_writable(self):
+        from hermes_cli import tools_config
+
+        with patch("os.access", return_value=True):
+            assert tools_config._check_applications_writable() is True
+
+    def test_returns_false_when_not_writable(self):
+        from hermes_cli import tools_config
+
+        with patch("os.access", return_value=False):
+            assert tools_config._check_applications_writable() is False
+
+    def test_returns_false_on_oserror(self):
+        from hermes_cli import tools_config
+
+        with patch("os.access", side_effect=OSError("permission denied")):
+            assert tools_config._check_applications_writable() is False
+
+
+class TestCuaDriverApplicationsWritableGate:
+    def test_upgrade_skips_when_not_writable(self):
+        """Upgrade path should skip installer when /Applications is not writable."""
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n in {"cua-driver", "curl"} else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_check_applications_writable",
+                          return_value=False), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(tools_config, "_print_info"), \
+             patch("subprocess.run"):
+            # With binary — returns True (binary still exists)
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            runner.assert_not_called()
+
+    def test_fresh_install_skips_when_not_writable(self):
+        """Fresh install path should skip installer when /Applications is not writable."""
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_check_applications_writable",
+                          return_value=False), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            assert tools_config.install_cua_driver(upgrade=False) is False
+            runner.assert_not_called()
+
+    def test_upgrade_without_binary_skips_when_not_writable(self):
+        """Upgrade path without existing binary returns False when not writable."""
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_check_applications_writable",
+                          return_value=False), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(tools_config, "_print_info"):
             assert tools_config.install_cua_driver(upgrade=True) is False
             runner.assert_not_called()
