@@ -566,19 +566,24 @@ def _run_review_in_thread(
             # measured impact (~26% end-to-end cost reduction on
             # Sonnet 4.5).
             review_agent._cached_system_prompt = agent._cached_system_prompt
-            # Defensive: pin session_start + session_id to the
-            # parent's so any code path that re-renders parts of
-            # the system prompt (compression, plugin hooks) still
-            # produces byte-identical output. The cached-prompt
-            # assignment above already short-circuits the normal
-            # rebuild path, but these pins guarantee parity even
-            # if a future code path bypasses the cache.
+            # Pin session_start so any code path that re-renders parts of
+            # the system prompt (plugin hooks) still produces byte-identical
+            # output. The cached-prompt assignment above already
+            # short-circuits the normal rebuild path, but this pin
+            # guarantees parity even if a future code path bypasses the
+            # cache.
             review_agent.session_start = agent.session_start
-            review_agent.session_id = agent.session_id
-            # Never let the review fork compress. It shares the parent's
-            # session_id, so if it won a compression race it would rotate the
-            # parent into a NEW child that the gateway never adopts (the fork
-            # is single-lifecycle and dies right after this run_conversation).
+            # DO NOT share the parent's session_id.  The review agent
+            # writes its own messages (including denied-tool-call errors)
+            # during run_conversation.  If it used the parent's session_id,
+            # those error messages would land in the parent's session DB
+            # and the parent would see them in its conversation context,
+            # causing the model to decide the turn is "done" prematurely
+            # with abnormally short responses.  (issue #47268)
+            # Never let the review fork compress. It uses a separate
+            # session_id from the parent, so compressing would create
+            # a new child that the gateway never adopts (the fork is
+            # single-lifecycle and dies right after this run_conversation).
             # The foreground turn would then start from the stale parent and
             # compress it again, leaving the same parent with two sibling
             # children (issue #38727). Review also needs full context to

@@ -131,20 +131,23 @@ def test_review_fork_inherits_parent_cached_system_prompt():
     )
 
 
-def test_review_fork_pins_session_start_and_session_id():
-    """Defensive complement to cached-system-prompt inheritance.
+def test_review_fork_pins_session_start_and_has_own_session_id():
+    """Review fork inherits session_start but uses its own session_id.
 
-    Even though ``_cached_system_prompt`` inheritance short-circuits the
-    normal rebuild path, pinning ``session_start`` and ``session_id`` to
-    the parent's guarantees byte-identical output from any code path that
-    re-renders parts of the system prompt (compression, plugin hooks).
+    ``session_start`` is pinned so any code path that re-renders parts of
+    the system prompt (plugin hooks) still produces byte-identical output.
+
+    However, ``session_id`` must NOT be shared with the parent -- the review
+    agent writes its own messages (including denied-tool-call errors) during
+    ``run_conversation``.  If it used the parent's session_id, those error
+    messages would land in the parent's session DB and the parent would see
+    them in its conversation context, causing the model to decide the turn
+    is "done" prematurely with abnormally short responses.  (issue #47268)
     """
     import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
-
     captured = {}
-
     class _Recorder:
         def __init__(self, *args, **kwargs):
             self._cached_system_prompt = None
@@ -158,6 +161,7 @@ def test_review_fork_pins_session_start_and_session_id():
             self.suppress_status_output = None
             self.session_start = None
             self.session_id = None
+            self._parent_session_id = None
 
         def run_conversation(self, *args, **kwargs):
             captured["session_start"] = self.session_start
@@ -179,12 +183,14 @@ def test_review_fork_pins_session_start_and_session_id():
         )
 
     assert captured.get("session_start") == agent.session_start, (
-        "Review fork did not inherit parent's session_start — "
+        "Review fork did not inherit parent's session_start -- "
         "system-prompt rebuild paths would diverge."
     )
-    assert captured.get("session_id") == agent.session_id, (
-        "Review fork did not inherit parent's session_id — "
-        "system-prompt rebuild paths would diverge."
+    # session_id must NOT be shared -- see issue #47268
+    assert captured.get("session_id") != agent.session_id, (
+        "Review fork shared parent's session_id -- denied tool call errors "
+        "would pollute the parent's session DB and cause premature turn "
+        "termination. (issue #47268)"
     )
 
 
