@@ -849,6 +849,8 @@ export const fr: Translations = {
       removedMessage: provider => `${provider} a été retiré.`,
       failedRemove: provider => `Impossible de retirer ${provider}`,
       noProviderKeys: 'Aucune clé API de fournisseur disponible.',
+      searchKeys: 'Rechercher des fournisseurs…',
+      noKeysMatch: 'Aucun fournisseur ne correspond à votre recherche.',
       loading: 'Chargement des fournisseurs...'
     },
     sessions: {
@@ -1029,7 +1031,8 @@ export const fr: Translations = {
     gatewayRunning: 'Passerelle de messagerie en cours d\'exécution',
     gatewayStopped: 'Passerelle de messagerie arrêtée',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Sessions actives ${count}`,
-    restartMessaging: 'Redémarrer la messagerie',
+    restartGateway: 'Redémarrer la passerelle',
+    gatewayRestartFailed: 'Échec du redémarrage de la passerelle.',
     updateHermes: 'Mettre à jour Hermes',
     actionRunning: 'en cours',
     actionDone: 'terminé',
@@ -1855,6 +1858,7 @@ export const fr: Translations = {
       gatewayChecking: 'vérification',
       gatewayConnecting: 'connexion',
       gatewayOffline: 'hors ligne',
+      gatewayRestarting: 'redémarrage…',
       gatewayTitle: 'Statut de la passerelle d\'inférence Hermes',
       agents: 'Agents',
       closeAgents: 'Fermer les agents',
