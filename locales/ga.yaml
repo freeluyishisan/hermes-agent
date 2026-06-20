@@ -123,9 +123,7 @@ gateway:
   api_hint_rejected:           " The request was rejected by the API."
   api_error_generic:           "Sorry, an error occurred ({error_type}).\n{error_detail}\n{status_hint}Try again or use /reset to start a fresh session."
   delivery_failed:             "⚠️ Message delivery failed after multiple attempts. Please try again — your request was processed but the response could not be sent."
-  response_formatting_failed:             "(Response formatting failed, plain text:)
-
-{content}"
+  response_formatting_failed:   "(Response formatting failed, plain text:)\n\n{content}"
   audio_fallback_caption:             "🔊 Audio: {audio_path}"
   file_fallback_caption:             "📎 File: {file_path}"
   image_fallback_caption:             "🖼️ Image: {image_path}"
