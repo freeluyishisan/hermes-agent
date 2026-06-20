@@ -431,8 +431,9 @@ def _suppressed_categories() -> frozenset[str]:
             logger.warning("Ignoring non-suppressible/unknown system-message category %r", item)
     frozen = frozenset(result)
     with _suppress_lock:
-        _suppress_cache = frozen
-    return frozen
+        if _suppress_cache is None:
+            _suppress_cache = frozen
+        return _suppress_cache
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:

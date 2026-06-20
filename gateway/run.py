@@ -9193,7 +9193,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         try:
                                             _adapter = self.adapters.get(source.platform)
                                             if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
+                                                await _send_unless_empty(_adapter, chat_id=source.chat_id, content=_aux_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
                                             logger.warning(
                                                 "Failed to deliver aux-model-fallback notice to user: %s",

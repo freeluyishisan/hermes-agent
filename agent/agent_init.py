@@ -1686,7 +1686,9 @@ def init_agent(
         # turn 1 (set below, after the warning slot is initialized).
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
         if _autoraise and compression_enabled:
-            print(_build_codex_gpt55_autoraise_notice(_autoraise))
+            _notice = _build_codex_gpt55_autoraise_notice(_autoraise)
+            if _notice:
+                print(_notice)
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored

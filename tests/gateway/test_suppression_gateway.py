@@ -28,3 +28,17 @@ def test_shutdown_lifecycle_keys_in_map():
     """Restoration guard: shutdown lifecycle notices must stay in the map."""
     assert i18n.GATEWAY_MESSAGE_CATEGORIES["gateway.shutdown_restarting"] == "lifecycle"
     assert i18n.GATEWAY_MESSAGE_CATEGORIES["gateway.shutdown_shutting_down"] == "lifecycle"
+
+
+def test_compress_aux_failed_suppressed_sends_nothing(monkeypatch):
+    from agent import i18n
+    monkeypatch.setattr(i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages": {"suppress": ["info"]}}})
+    i18n.reset_language_cache()
+    import asyncio
+    a = _Adapter()
+    content = i18n.t("gateway.compress_aux_model_failed", model="m", err="e")
+    assert content == ""
+    asyncio.run(gw._send_unless_empty(a, chat_id="c", content=content))
+    assert a.sent == []
+    i18n.reset_language_cache()

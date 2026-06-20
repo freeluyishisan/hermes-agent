@@ -779,6 +779,8 @@ class AIAgent:
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
         """
+        if not str(message).strip():
+            return
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
@@ -796,6 +798,8 @@ class AIAgent:
         such as auxiliary compression or memory flushes where the main turn can
         continue but the user needs to know something important failed.
         """
+        if not str(message).strip():
+            return
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
