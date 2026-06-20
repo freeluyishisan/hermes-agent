@@ -49,3 +49,9 @@
     transparent 60%
   );
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-fade-in {
+    animation: none;
+  }
+}

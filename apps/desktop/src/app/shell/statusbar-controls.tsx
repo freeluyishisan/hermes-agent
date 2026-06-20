@@ -88,6 +88,9 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 }
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
+  const accessibleTitle =
+    item.title ?? (typeof item.label === 'string' ? item.label : typeof item.detail === 'string' ? item.detail : undefined)
+
   const content = (
     <>
       {item.icon}
@@ -101,7 +104,13 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
       <Tip label={item.title}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+            <button
+              aria-label={accessibleTitle}
+              className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+              disabled={item.disabled}
+              title={accessibleTitle}
+              type="button"
+            >
               {content}
             </button>
           </DropdownMenuTrigger>
@@ -170,7 +179,14 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={item.title}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          aria-label={accessibleTitle}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          href={item.href}
+          rel="noreferrer"
+          target="_blank"
+          title={accessibleTitle}
+        >
           {content}
         </a>
       </Tip>
@@ -180,6 +196,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   return (
     <Tip label={item.title}>
       <button
+        aria-label={accessibleTitle}
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}
         onClick={event => {
@@ -189,6 +206,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
           item.onSelect?.({ shiftKey: event.shiftKey })
         }}
+        title={accessibleTitle}
         type="button"
       >
         {content}

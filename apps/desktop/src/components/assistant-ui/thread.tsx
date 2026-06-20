@@ -1798,6 +1798,11 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     window.setTimeout(refreshTrigger, 0)
   }
 
+  const triggerKindId = trigger?.kind === '@' ? 'at-edit' : 'slash-edit'
+  const triggerListboxId = `composer-${triggerKindId}-completion-listbox`
+  const triggerOptionIdPrefix = `composer-${triggerKindId}-completion`
+  const activeTriggerOptionId = trigger && triggerItems[triggerActive] ? `${triggerOptionIdPrefix}-${triggerActive}` : undefined
+
   return (
     <ComposerPrimitive.Root className="contents" data-slot="aui_edit-composer-root">
       <StickyHumanMessageContainer>
@@ -1815,9 +1820,11 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               activeIndex={triggerActive}
               items={triggerItems}
               kind={trigger.kind}
+              listboxId={triggerListboxId}
               loading={triggerLoading}
               onHover={setTriggerActive}
               onPick={replaceTriggerWithChip}
+              optionIdPrefix={triggerOptionIdPrefix}
               placement={triggerPlacement}
             />
           )}
@@ -1831,7 +1838,12 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             data-expanded={expanded ? 'true' : undefined}
           >
             <div
+              aria-activedescendant={activeTriggerOptionId}
+              aria-autocomplete="list"
+              aria-controls={trigger ? triggerListboxId : undefined}
+              aria-expanded={trigger ? true : undefined}
               aria-label={copy.editMessage}
+              aria-multiline="true"
               autoCapitalize="off"
               autoCorrect="off"
               className={cn(
