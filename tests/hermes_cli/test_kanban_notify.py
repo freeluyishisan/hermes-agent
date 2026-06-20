@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -76,6 +77,161 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
     finally:
         conn.close()
     assert subs == [], "Subscription should be unsub after completed event"
+
+
+def test_notify_sub_trigger_agent_persists_and_preserves_owner(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="trigger sub task", assignee="worker1")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            notifier_profile="owner-a",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            notifier_profile="owner-b",
+            trigger_agent=True,
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "owner-a"
+    assert int(subs[0]["trigger_agent"]) == 1
+
+
+def test_child_task_inherits_parent_notify_subscription(kanban_home):
+    """Graph children must inherit the parent's ACK edge."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="discord",
+            chat_id="1499390151393284106",
+            thread_id="123",
+            user_id="u1",
+            notifier_profile="default",
+            trigger_agent=True,
+        )
+        child = kb.create_task(
+            conn,
+            title="review child",
+            assignee="ccreviewer",
+            parents=[parent],
+        )
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "1499390151393284106"
+    assert subs[0]["thread_id"] == "123"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["notifier_profile"] == "default"
+    assert int(subs[0]["trigger_agent"]) == 1
+
+
+def test_cli_create_infers_notify_subscription_from_origin_return_to_body(kanban_home):
+    """CLI-created cards with explicit Origin/return_to prose keep ACKs."""
+    import hermes_cli.kanban as kc
+    import hermes_cli.kanban_db as kb
+
+    body = "Origin/return_to: Discord Devhub #research (<#1499390151393284106>)\nDo the work."
+    out = kc.run_slash(
+        "create 'origin prose task' "
+        f"--body {json.dumps(body)} "
+        "--assignee ccreviewer --json"
+    )
+    payload = json.loads(out)
+    task_id = payload["id"]
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "1499390151393284106"
+    assert int(subs[0]["trigger_agent"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_notifier_active_wake_only_for_trigger_agent_subs(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        passive_tid = kb.create_task(conn, title="passive task", assignee="worker1")
+        active_tid = kb.create_task(conn, title="active task", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=passive_tid, platform="telegram", chat_id="chat1")
+        kb.add_notify_sub(
+            conn,
+            task_id=active_tid,
+            platform="telegram",
+            chat_id="chat1",
+            trigger_agent=True,
+        )
+        kb.block_task(conn, passive_tid, reason="passive block")
+        kb.block_task(conn, active_tid, reason="active block")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    sent_msgs: list[str] = []
+
+    async def _send(chat_id, msg, metadata=None):
+        sent_msgs.append(msg)
+
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    trigger_mock = AsyncMock(return_value={"triggered_agent": True})
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("tools.send_message_tool._trigger_gateway_agent", new=trigger_mock):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert len(sent_msgs) == 2
+    assert any("passive block" in msg for msg in sent_msgs)
+    assert any("active block" in msg for msg in sent_msgs)
+    trigger_mock.assert_awaited_once()
+    trigger_call = trigger_mock.await_args
+    assert trigger_call is not None
+    assert "active block" in trigger_call.args[2]
 
 
 @pytest.mark.asyncio

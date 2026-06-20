@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -690,6 +691,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
     )
+    p_nsub.add_argument(
+        "--trigger-agent", action="store_true",
+        help="After terminal notification delivery, schedule an internal inbound event so the destination gateway agent wakes. Default is passive notification only.",
+    )
 
     p_nlist = sub.add_parser(
         "notify-list",
@@ -986,6 +991,38 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+def _infer_origin_subscription_from_body(body: Optional[str]) -> dict[str, str] | None:
+    """Infer a terminal ACK subscription from machine-readable body prose.
+
+    This intentionally recognizes only narrow, explicit shapes used in Kanban
+    task contracts, e.g. ``Origin/return_to: Discord ... (<#149...>)`` or
+    ``chat_id=149...``. It is a recovery rail for terminal/script-created
+    cards, not a general natural-language parser.
+    """
+    if not body:
+        return None
+    origin_line = ""
+    for line in str(body).splitlines():
+        if re.search(r"\b(?:origin|return_to|return-to)\b", line, re.I):
+            origin_line = line.strip()
+            break
+    if not origin_line:
+        return None
+    if not re.search(r"\bdiscord\b", origin_line, re.I):
+        return None
+    chat_match = re.search(r"<#(\d{5,})>", origin_line)
+    if chat_match is None:
+        chat_match = re.search(r"\bchat_id\s*[=:]\s*(\d{5,})\b", origin_line, re.I)
+    if chat_match is None:
+        return None
+    thread_match = re.search(r"\b(?:thread_id|topic_id)\s*[=:]\s*(\d{5,})\b", origin_line, re.I)
+    return {
+        "platform": "discord",
+        "chat_id": chat_match.group(1),
+        "thread_id": thread_match.group(1) if thread_match else "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1325,6 +1362,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    inferred_origin = _infer_origin_subscription_from_body(getattr(args, "body", None))
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1347,6 +1385,19 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
         )
+        if inferred_origin:
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=inferred_origin["platform"],
+                chat_id=inferred_origin["chat_id"],
+                thread_id=inferred_origin.get("thread_id") or None,
+                notifier_profile=_profile_author(),
+                # Body prose inference is a recovery rail for passive terminal
+                # ACK delivery only. Active wake remains explicit via
+                # --ack-trigger-agent / notify-subscribe --trigger-agent.
+                trigger_agent=False,
+            )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
@@ -2426,6 +2477,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
             notifier_profile=args.notifier_profile or _profile_author(),
+            trigger_agent=bool(getattr(args, "trigger_agent", False)),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
@@ -2445,8 +2497,9 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
+        wake = "  trigger_agent" if s.get("trigger_agent") else ""
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']}){owner}")
+              f"  (since event {s['last_event_id']}){owner}{wake}")
     return 0
 
 
