@@ -343,6 +343,28 @@ function buildRoutes(
 }
 
 const SIDEBAR_OPEN_KEY = "hermes-sidebar-open";
+/** @deprecated Replaced by SIDEBAR_OPEN_KEY — read once for migration. */
+const LEGACY_SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
+
+function readSidebarOpenFromStorage(): boolean {
+  try {
+    const storedOpen = localStorage.getItem(SIDEBAR_OPEN_KEY);
+    if (storedOpen !== null) return storedOpen !== "false";
+
+    const legacyCollapsed = localStorage.getItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
+    if (legacyCollapsed !== null) {
+      // Old "collapsed" was a narrow icon rail; the new model is open (w-64)
+      // or fully closed — never a rail. Treat legacy collapsed=true as closed.
+      const open = legacyCollapsed !== "true";
+      localStorage.setItem(SIDEBAR_OPEN_KEY, open ? "true" : "false");
+      localStorage.removeItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
+      return open;
+    }
+  } catch {
+    /* localStorage may be unavailable in private browsing */
+  }
+  return true;
+}
 
 // Interactive shell chrome must sit above <Backdrop />'s inversion layer
 // (z-200, mix-blend-mode:difference). That layer is pointer-events-none,
@@ -356,15 +378,7 @@ export default function App() {
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    try {
-      const stored = localStorage.getItem(SIDEBAR_OPEN_KEY);
-      if (stored !== null) return stored !== "false";
-    } catch {
-      /* localStorage may be unavailable in private browsing */
-    }
-    return true;
-  });
+  const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpenFromStorage);
   const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
     try {
@@ -552,7 +566,7 @@ export default function App() {
                     "transition-[transform] duration-200 ease-out",
                     sidebarOpen ? "translate-x-0" : "-translate-x-full",
                   )
-                : "sticky top-0 w-64 shrink-0 overflow-hidden",
+                : "sticky top-0 w-64 min-w-64 max-w-64 shrink-0 overflow-hidden",
             )}
             style={{
               background: "var(--component-sidebar-background)",
@@ -685,6 +699,27 @@ export default function App() {
           </aside>
           )}
 
+          {!isMobile && !sidebarOpen ? (
+            <div
+              className={cn(
+                SHELL_Z,
+                "shrink-0 border-b border-current/20",
+                "bg-background-base/95 px-3 py-2 sm:px-6",
+              )}
+              style={{ backgroundColor: "var(--background-base)" }}
+            >
+              <Button
+                ghost
+                size="icon"
+                type="button"
+                prefix={<Menu />}
+                onClick={openSidebar}
+                aria-label={t.app.openNavigation}
+                aria-controls="app-sidebar"
+                className="text-text-secondary hover:text-midground"
+              />
+            </div>
+          ) : null}
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div
               className={cn(
