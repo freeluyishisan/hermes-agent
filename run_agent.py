@@ -1659,6 +1659,10 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                # Skip user messages — already persisted by bridge/Node.js
+                if role == "user" and getattr(self, "_last_flushed_db_idx", 0) > len(conversation_history or []):
+                    flushed_ids.add(msg_id)
+                    continue
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
