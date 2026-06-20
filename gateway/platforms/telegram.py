@@ -89,13 +89,17 @@ from gateway.platforms.telegram_network import (
 )
 from utils import atomic_replace, env_float, env_int
 
-_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp", ".tiff", ".tif", ".avif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
+    "image/svg+xml": ".svg",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "image/avif": ".avif",
 }
 _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".png": "image/png",
@@ -103,6 +107,11 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    ".avif": "image/avif",
 }
 
 
@@ -2386,7 +2395,8 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        skip_rich: bool = False,
     ) -> SendResult:
         """Send a message to a Telegram chat."""
         if not self._bot:
@@ -2406,7 +2416,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            if not skip_rich and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -5165,8 +5175,9 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         # 8) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
+        #    Use [\s\S] instead of . so multi-line spoilers work.
         text = re.sub(
-            r'\|\|(.+?)\|\|',
+            r'\|\|([\s\S]+?)\|\|',
             lambda m: _ph(f'||{_escape_mdv2(m.group(1))}||'),
             text,
         )

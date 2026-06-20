@@ -1896,6 +1896,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate reasoning content
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            # MiMo and some other providers store reasoning in model_extra
+            # rather than as a direct attribute on the delta object.
+            if not reasoning_text and hasattr(delta, "model_extra"):
+                _me = getattr(delta, "model_extra", None) or {}
+                if isinstance(_me, dict):
+                    reasoning_text = _me.get("reasoning_content") or _me.get("reasoning")
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()

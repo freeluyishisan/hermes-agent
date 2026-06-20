@@ -1144,6 +1144,33 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+    ".html": "text/html",
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".jsx": "text/javascript",
+    ".tsx": "text/javascript",
+    ".sql": "text/sql",
+    ".env": "text/plain",
+    ".gitignore": "text/plain",
+    ".dockerignore": "text/plain",
+    ".java": "text/plain",
+    ".go": "text/plain",
+    ".rs": "text/plain",
+    ".rb": "text/plain",
+    ".php": "text/plain",
+    ".swift": "text/plain",
+    ".kt": "text/plain",
+    ".c": "text/plain",
+    ".cpp": "text/plain",
+    ".h": "text/plain",
+    ".hpp": "text/plain",
+    ".cs": "text/plain",
+    ".r": "text/plain",
+    ".lua": "text/plain",
+    ".pl": "text/plain",
+    ".pm": "text/plain",
+    ".t": "text/plain",
+    ".epub": "application/epub+zip",
 }
 
 
@@ -2318,7 +2345,8 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        skip_rich: bool = False,
     ) -> SendResult:
         """
         Send a message to a chat.

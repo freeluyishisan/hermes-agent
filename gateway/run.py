@@ -9597,17 +9597,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
-            if _show_reasoning_effective and response and not _intentional_silence:
+            if _show_reasoning_effective and response and not _intentional_silence and not agent_result.get("already_sent"):
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    display_reasoning = last_reasoning.strip()
+                    # Send reasoning as a separate spoiler message BEFORE the response
+                    try:
+                        _r_adapter = self.adapters.get(source.platform)
+                        if _r_adapter:
+                            _r_msg = f"💭 **Reasoning:**\n||{display_reasoning}||"
+                            await _r_adapter.send(
+                                source.chat_id,
+                                _r_msg,
+                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                skip_rich=True,
+                            )
+                    except Exception as _re:
+                        logger.debug("reasoning send failed: %s", _re)
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -9913,6 +9919,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
+                # Streaming already delivered the body text.  Reasoning
+                # may have been sent by the stream consumer during
+                # streaming (when show_reasoning is enabled).  This
+                # trailing send is a safety net for models that return
+                # reasoning via last_reasoning but don't emit inline
+                # thinking tags.  Skip if the stream consumer already
+                # sent it (already_sent path means consumer was active).
+                # Reasoning already sent before the response via the
+                # non-streaming path. Skip here to avoid duplicate.
+
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
@@ -14016,6 +14032,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else bool(_plat_streaming)
         )
 
+        # Resolve show_reasoning for passing to the stream consumer
+        try:
+            _show_reasoning_effective = resolve_display_setting(
+                user_config, platform_key, "show_reasoning",
+                getattr(self, "_show_reasoning", False),
+            )
+        except Exception:
+            _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+
+        # When show_reasoning is enabled, disable streaming so reasoning
+        # appears BEFORE the response.
+        if _streaming_enabled and _show_reasoning_effective:
+            _streaming_enabled = False
+
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
         if _streaming_enabled:
@@ -15172,6 +15202,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            # Resolve show_reasoning for passing to the stream consumer
+            try:
+                _show_reasoning_effective = resolve_display_setting(
+                    user_config, platform_key, "show_reasoning",
+                    getattr(self, "_show_reasoning", False),
+                )
+            except Exception:
+                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+            # When show_reasoning is enabled, disable streaming so reasoning
+            # appears BEFORE the response.
+            if _streaming_enabled and _show_reasoning_effective:
+                _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
