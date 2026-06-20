@@ -148,6 +148,12 @@ export const fr: Translations = {
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason =>
+      `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter le scintillement.`,
+    dismiss: 'Ignorer'
+  },
+
   titlebar: {
     hideSidebar: 'Masquer la barre latérale',
     showSidebar: 'Afficher la barre latérale',
