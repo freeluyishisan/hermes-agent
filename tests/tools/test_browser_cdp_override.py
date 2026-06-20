@@ -1,4 +1,7 @@
+import logging
 from unittest.mock import Mock, patch
+
+import pytest
 
 
 HOST = "example-host"
@@ -6,6 +9,17 @@ PORT = 9223
 WS_URL = f"ws://{HOST}:{PORT}/devtools/browser/abc123"
 HTTP_URL = f"http://{HOST}:{PORT}"
 VERSION_URL = f"{HTTP_URL}/json/version"
+
+
+@pytest.fixture(autouse=True)
+def clear_cdp_discovery_failure_cache():
+    import tools.browser_tool as browser_tool
+
+    with browser_tool._cdp_discovery_failure_cache_lock:
+        browser_tool._cdp_discovery_failure_cache.clear()
+    yield
+    with browser_tool._cdp_discovery_failure_cache_lock:
+        browser_tool._cdp_discovery_failure_cache.clear()
 
 
 class TestResolveCdpOverride:
@@ -40,11 +54,36 @@ class TestResolveCdpOverride:
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
-    def test_falls_back_to_raw_url_when_discovery_fails(self):
+    def test_resolves_bare_hostport_config_shorthand_to_discovery_websocket(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
+
+        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
+            resolved = _resolve_cdp_override(f"{HOST}:{PORT}")
+
+        assert resolved == WS_URL
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+
+    def test_treats_discovery_endpoint_as_unavailable_when_discovery_fails(self):
         from tools.browser_tool import _resolve_cdp_override
 
         with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
-            assert _resolve_cdp_override(HTTP_URL) == HTTP_URL
+            assert _resolve_cdp_override(HTTP_URL) == ""
+
+    def test_unreachable_discovery_endpoint_is_debug_logged_and_negative_cached(self, caplog):
+        from tools.browser_tool import _resolve_cdp_override
+
+        with caplog.at_level(logging.DEBUG, logger="tools.browser_tool"), \
+             patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")) as mock_get:
+            assert _resolve_cdp_override(f"ws://{HOST}:{PORT}") == ""
+            assert _resolve_cdp_override(f"ws://{HOST}:{PORT}") == ""
+
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+        assert "not reachable" in caplog.text
+        assert "WARNING" not in caplog.text
 
     def test_normalizes_provider_returned_http_cdp_url_when_creating_session(self, monkeypatch):
         import tools.browser_tool as browser_tool
