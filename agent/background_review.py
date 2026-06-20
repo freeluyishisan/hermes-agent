@@ -381,7 +381,7 @@ def summarize_background_review_actions(
                 elif action == "edit" and description:
                     actions.append(t("gateway.review_skill_rewritten", name=skill_name, description=description))
                 else:
-                    actions.append(f"📝 {message}" if message else f"Skill {action}")
+                    actions.append(t("gateway.review_skill_message", message=message) if message else t("gateway.review_skill_action", action=action))
             elif operations:
                 for op in operations:
                     op = op or {}

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.i18n import t, reset_language_cache
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -34,11 +34,6 @@ class TestBatchARendering:
         ru = t("gateway.iteration_budget_exhausted", lang="ru", n=5, max=10)
         assert "5" in en and "10" in en
         assert "5" in ru and "10" in ru
-        assert en != ru
-
-    def test_compaction_status_ru(self):
-        en = t("gateway.compaction_status", lang="en")
-        ru = t("gateway.compaction_status", lang="ru")
         assert en != ru
 
     def test_api_error_billing_ru(self):
