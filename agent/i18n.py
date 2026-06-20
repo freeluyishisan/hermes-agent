@@ -97,15 +97,9 @@ GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
     "gateway.queued_next_turn": "progress",
     "gateway.interrupting_task": "progress",
     "gateway.steered_into_run": "progress",
-    "gateway.busy_not_accepting_turn": "progress",
-    "gateway.busy_not_accepting_work": "progress",
-    "gateway.busy_queued_drain": "progress",
     # lifecycle — gateway daemon lifecycle notifications
     "gateway.restart_success": "lifecycle",
     "gateway.gateway_online": "lifecycle",
-    "gateway.draining": "lifecycle",
-    "gateway.shutdown_restarting": "lifecycle",
-    "gateway.shutdown_shutting_down": "lifecycle",
     # info — one-shot notices
     "gateway.codex_gpt55_autoraise_notice": "info",
     "gateway.self_review_header": "info",

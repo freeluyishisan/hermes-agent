@@ -9,12 +9,9 @@ EXPECTED = {
         "gateway.long_running", "gateway.no_activity_warning",
         "gateway.subagent_working", "gateway.queued_next_turn",
         "gateway.interrupting_task", "gateway.steered_into_run",
-        "gateway.busy_not_accepting_turn", "gateway.busy_not_accepting_work",
-        "gateway.busy_queued_drain",
     },
     "lifecycle": {
-        "gateway.restart_success", "gateway.gateway_online", "gateway.draining",
-        "gateway.shutdown_restarting", "gateway.shutdown_shutting_down",
+        "gateway.restart_success", "gateway.gateway_online",
     },
     "info": {
         "gateway.codex_gpt55_autoraise_notice", "gateway.self_review_header",

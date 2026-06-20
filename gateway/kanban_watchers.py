@@ -357,6 +357,10 @@ class GatewayKanbanWatchersMixin:
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
+                        if not msg:
+                            # Suppressed category — t() returned ""; skip send,
+                            # continue iterating so cursor still advances.
+                            continue
                         try:
                             await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
