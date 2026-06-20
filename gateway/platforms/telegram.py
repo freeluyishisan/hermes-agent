@@ -106,7 +106,7 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 }
 
 
-MAX_COMMANDS_PER_SCOPE = 30
+MAX_COMMANDS_PER_SCOPE = 100
 
 
 def check_telegram_requirements() -> bool:
@@ -1431,6 +1431,126 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, exc_info=True,
             )
 
+    def _telegram_network_retry_limits(self) -> tuple[int, float, float]:
+        """Return retry ladder settings for Telegram polling recovery.
+
+        Defaults are intentionally more OpenClaw-like than the historical
+        gateway behaviour: keep the gateway alive for a long outage, retry
+        quickly at first, and cap backoff so recovery is not delayed by a
+        minutes-long sleep after the network comes back.
+
+        Non-secret behavioral overrides, if ever needed, live in config.yaml
+        under the Telegram platform's ``extra`` map rather than new HERMES_*
+        environment variables.
+        """
+        def _extra_int(name: str, default: int, min_value: int, max_value: int) -> int:
+            try:
+                value = int(self.config.extra.get(name, default))
+            except (TypeError, ValueError):
+                value = default
+            return max(min_value, min(value, max_value))
+
+        def _extra_float(name: str, default: float, min_value: float, max_value: float) -> float:
+            import math
+
+            try:
+                value = float(self.config.extra.get(name, default))
+            except (TypeError, ValueError):
+                value = default
+            if not math.isfinite(value):
+                value = default
+            return max(min_value, min(value, max_value))
+
+        max_retries = _extra_int("network_max_retries", 60, 1, 10000)
+        base_delay = _extra_float("network_base_delay", 5.0, 1.0, 60.0)
+        max_delay = _extra_float("network_max_delay", 30.0, base_delay, 300.0)
+        return max_retries, base_delay, max_delay
+
+    def _schedule_polling_recovery(self, error: Exception, *, reason: str) -> None:
+        """Schedule Telegram polling recovery without failing gateway startup.
+
+        This mirrors OpenClaw's isolated-polling strategy: a Telegram channel
+        bootstrap/deleteWebhook failure degrades only the Telegram adapter while
+        the gateway process remains alive and keeps retrying in the background.
+        """
+        if self.has_fatal_error:
+            return
+        if self._polling_error_task and not self._polling_error_task.done():
+            logger.debug(
+                "[%s] Telegram polling recovery already scheduled; ignoring %s: %s",
+                self.name,
+                reason,
+                error,
+            )
+            return
+        self._send_path_degraded = True
+        logger.warning(
+            "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
+            self.name,
+            reason,
+            error,
+        )
+        loop = asyncio.get_running_loop()
+        self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
+        self._background_tasks.add(self._polling_error_task)
+        self._polling_error_task.add_done_callback(self._background_tasks.discard)
+
+    async def _delete_webhook_best_effort(self) -> bool:
+        """Clear webhook if possible, but do not fail polling on network errors."""
+        if not self._bot:
+            return False
+        delete_webhook = getattr(self._bot, "delete_webhook", None)
+        if not callable(delete_webhook):
+            return True
+        try:
+            await delete_webhook(drop_pending_updates=False)
+            return True
+        except Exception as err:
+            if self._looks_like_network_error(err):
+                logger.warning(
+                    "[%s] deleteWebhook failed with a recoverable network error; "
+                    "continuing to polling so getUpdates/retry can recover: %s",
+                    self.name,
+                    err,
+                )
+                self._send_path_degraded = True
+                return False
+            raise
+
+    async def _start_polling_resilient(
+        self,
+        *,
+        drop_pending_updates: bool,
+        error_callback,
+    ) -> bool:
+        """Start PTB polling; on transient bootstrap failure, retry in background."""
+        if not (self._app and self._app.updater):
+            raise RuntimeError("Telegram application/updater not initialized")
+        try:
+            await self._app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=drop_pending_updates,
+                error_callback=error_callback,
+            )
+            return True
+        except Exception as err:
+            if self._looks_like_polling_conflict(err):
+                logger.warning(
+                    "[%s] Telegram polling bootstrap conflict; gateway stays alive "
+                    "while conflict retry runs: %s",
+                    self.name,
+                    err,
+                )
+                loop = asyncio.get_running_loop()
+                self._polling_error_task = loop.create_task(self._handle_polling_conflict(err))
+                self._background_tasks.add(self._polling_error_task)
+                self._polling_error_task.add_done_callback(self._background_tasks.discard)
+                return False
+            if self._looks_like_network_error(err):
+                self._schedule_polling_recovery(err, reason="polling bootstrap")
+                return False
+            raise
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -1446,9 +1566,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if self.has_fatal_error:
             return
 
-        MAX_NETWORK_RETRIES = 10
-        BASE_DELAY = 5
-        MAX_DELAY = 60
+        MAX_NETWORK_RETRIES, BASE_DELAY, MAX_DELAY = self._telegram_network_retry_limits()
 
         self._polling_network_error_count += 1
         self._send_path_degraded = True
@@ -2189,9 +2307,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 # ── Polling mode (default) ───────────────────────────
                 # Clear any stale webhook first so polling doesn't inherit a
                 # previous webhook registration and silently stop receiving updates.
-                delete_webhook = getattr(self._bot, "delete_webhook", None)
-                if callable(delete_webhook):
-                    await delete_webhook(drop_pending_updates=False)
+                # This is best-effort: transient Telegram network errors must not
+                # prevent the gateway from starting. Polling recovery below will
+                # continue in the background, OpenClaw-style.
+                await self._delete_webhook_best_effort()
 
                 loop = asyncio.get_running_loop()
 
@@ -2200,20 +2319,27 @@ class TelegramAdapter(BasePlatformAdapter):
                         return
                     if self._looks_like_polling_conflict(error):
                         self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+                        self._background_tasks.add(self._polling_error_task)
+                        self._polling_error_task.add_done_callback(self._background_tasks.discard)
                     elif self._looks_like_network_error(error):
                         logger.warning("[%s] Telegram network error, scheduling reconnect: %s", self.name, error)
-                        self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
+                        self._schedule_polling_recovery(error, reason="polling error callback")
                     else:
                         logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
 
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
 
-                await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                polling_started = await self._start_polling_resilient(
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
+                if not polling_started:
+                    logger.warning(
+                        "[%s] Connected in degraded Telegram mode: gateway is alive, "
+                        "polling will be retried in the background",
+                        self.name,
+                    )
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new

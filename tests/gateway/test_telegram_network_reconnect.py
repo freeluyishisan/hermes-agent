@@ -153,11 +153,18 @@ async def test_reconnect_success_resets_error_count():
 @pytest.mark.asyncio
 async def test_reconnect_triggers_fatal_after_max_retries():
     """
-    After MAX_NETWORK_RETRIES attempts, the adapter should set a fatal error
-    rather than retrying forever.
+    After configured MAX_NETWORK_RETRIES attempts, the adapter should set a
+    fatal error. Default production retries are intentionally higher; this test
+    pins the threshold via config.extra for a fast deterministic check.
     """
-    adapter = _make_adapter()
-    adapter._polling_network_error_count = 10  # MAX_NETWORK_RETRIES
+    adapter = TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"network_max_retries": 10},
+        )
+    )
+    adapter._polling_network_error_count = 10  # configured MAX_NETWORK_RETRIES
 
     fatal_handler = AsyncMock()
     adapter.set_fatal_error_handler(fatal_handler)
@@ -473,3 +480,81 @@ async def test_reconnect_schedules_heartbeat_probe_on_success():
             await t
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ── OpenClaw-style bootstrap degradation ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_webhook_network_error_is_recoverable():
+    """deleteWebhook timeouts must not fail gateway startup.
+
+    OpenClaw treats this as recoverable and continues toward polling; Hermes
+    should do the same so a transient Bot API outage does not become a systemd
+    service failure.
+    """
+    adapter = _make_adapter()
+    mock_bot = MagicMock()
+    mock_bot.delete_webhook = AsyncMock(side_effect=ConnectionError("api.telegram.org timeout"))
+    adapter._bot = mock_bot
+
+    result = await adapter._delete_webhook_best_effort()
+
+    assert result is False
+    assert adapter._send_path_degraded is True
+    mock_bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_polling_bootstrap_network_error_schedules_background_recovery():
+    """Initial start_polling() network failure should degrade, not raise."""
+    adapter = _make_adapter()
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock(side_effect=ConnectionError("bootstrap timeout"))
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+    adapter._schedule_polling_recovery = MagicMock()
+
+    result = await adapter._start_polling_resilient(
+        drop_pending_updates=True,
+        error_callback=lambda error: None,
+    )
+
+    assert result is False
+    adapter._schedule_polling_recovery.assert_called_once()
+    err = adapter._schedule_polling_recovery.call_args.args[0]
+    assert isinstance(err, ConnectionError)
+    assert adapter._schedule_polling_recovery.call_args.kwargs["reason"] == "polling bootstrap"
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_polling_bootstrap_conflict_schedules_conflict_recovery_task():
+    """Initial 409 polling conflict should also be recovered in background."""
+    adapter = _make_adapter()
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock(
+        side_effect=Exception("Conflict: terminated by other getUpdates request")
+    )
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+    adapter._handle_polling_conflict = AsyncMock()
+
+    result = await adapter._start_polling_resilient(
+        drop_pending_updates=True,
+        error_callback=lambda error: None,
+    )
+
+    assert result is False
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    assert pending, "expected background conflict recovery task"
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    assert not adapter.has_fatal_error
