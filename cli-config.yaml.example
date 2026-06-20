@@ -660,6 +660,14 @@ agent:
 #     gateway_online:    "♻️ {name} is back online and ready."
 #     interrupting_task: "⚡ Interrupting the current task — I'll reply shortly."
 #     long_running:      "⏳ Still working — {minutes} min so far."
+#     # Mute whole categories of ambient system messages. Categories:
+#     #   progress  — busy/heartbeat ("working N min", "interrupting", "queued")
+#     #   lifecycle — gateway restart/online/draining notices
+#     #   info      — one-shot notices (autoraise, self-improvement, kanban,
+#     #               compression notices)
+#     # errors, approval, and command replies are ALWAYS shown (not mutable).
+#     suppress: [progress, info]    # a subset, or:
+#     # suppress: all               # mutes progress + lifecycle + info
 
 # =============================================================================
 # Toolsets
