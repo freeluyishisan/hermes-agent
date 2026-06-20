@@ -1,4 +1,7 @@
-"""Tests for Batch A i18n: agent/* and gateway/kanban_watchers.py message localisation."""
+"""Tests for agent i18n: agent/* and gateway/kanban_watchers.py message localisation.
+
+Covers Batch A (direct emission) and Batch E (indirect/deferred emission paths).
+"""
 from __future__ import annotations
 
 import importlib
@@ -11,7 +14,7 @@ from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------
-# Rendering assertions — representative keys resolve to Russian under lang="ru"
+# Batch A rendering assertions — representative keys resolve to Russian under lang="ru"
 # ---------------------------------------------------------------------------
 
 class TestBatchARendering:
@@ -60,6 +63,29 @@ class TestBatchARendering:
         en = t("gateway.stale_connections_cleaned", lang="en")
         ru = t("gateway.stale_connections_cleaned", lang="ru")
         assert en != ru
+
+
+# ---------------------------------------------------------------------------
+# Batch E rendering assertions — codex gpt-5.5 autoraise notice
+# ---------------------------------------------------------------------------
+
+class TestBatchERendering:
+    def test_codex_gpt55_autoraise_notice_ru(self):
+        """Russian translation of the codex autoraise notice must differ from English
+        and must preserve the {to_pct} and {from_pct} substitutions."""
+        en = t("gateway.codex_gpt55_autoraise_notice", lang="en", to_pct=90, from_pct=80)
+        ru = t("gateway.codex_gpt55_autoraise_notice", lang="ru", to_pct=90, from_pct=80)
+        assert "90" in en and "80" in en, "English must contain the substituted percentages"
+        assert "90" in ru and "80" in ru, "Russian must contain the substituted percentages"
+        assert en != ru, "Russian should differ from English"
+
+    def test_codex_gpt55_autoraise_notice_en_exact(self):
+        """English catalog value must render with the correct opt-out command intact."""
+        result = t("gateway.codex_gpt55_autoraise_notice", lang="en", to_pct=95, from_pct=85)
+        assert "272K" in result
+        assert "gpt-5.5" in result
+        assert "hermes config set compression.codex_gpt55_autoraise false" in result
+        assert "95" in result and "85" in result
 
 
 # ---------------------------------------------------------------------------
@@ -133,4 +159,12 @@ class TestSourceGuards:
         src = _read_source("gateway/kanban_watchers.py")
         assert 'f"⏸ {tag}Kanban' not in src, (
             "bare kanban blocked f-string found in kanban_watchers.py"
+        )
+
+    def test_agent_init_no_bare_codex_autoraise_literal(self):
+        """The codex gpt-5.5 autoraise notice must not appear bare in agent_init.py."""
+        src = _read_source("agent/agent_init.py")
+        assert "Codex gpt-5.5 caps context at 272K" not in src, (
+            "bare codex gpt-5.5 autoraise notice literal found in agent_init.py — "
+            "must be wrapped with t('gateway.codex_gpt55_autoraise_notice', ...)"
         )
