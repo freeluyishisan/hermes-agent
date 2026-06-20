@@ -33,6 +33,7 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    "thinking_progress": False,
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -118,7 +119,16 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
     "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
-    "matrix":          _TIER_MEDIUM,
+    # Matrix clients commonly treat edits/replacements as read-relevant events,
+    # so keep token/interim streaming off. Tool activity is still useful for
+    # agent workflows and is rendered as a single collapsible formatted message
+    # by the Matrix adapter when clients support <details>/<summary>.
+    "matrix": {
+        **_TIER_MEDIUM,
+        "tool_progress": "new",
+        "streaming": False,
+        "tool_preview_length": 320,
+    },
     "feishu":          _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent
@@ -227,6 +237,7 @@ def _normalise(setting: str, value: Any) -> Any:
         return str(value).lower()
     if setting in {
         "show_reasoning",
+        "thinking_progress",
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",
