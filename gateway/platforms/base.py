@@ -20,6 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from agent.i18n import t
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -2548,18 +2549,18 @@ class BasePlatformAdapter(ABC):
         override this for a richer UX.
         """
         if choices:
-            lines = [f"❓ {question}", ""]
+            lines = [t("gateway.clarify_question", question=question), ""]
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            lines.append(t("gateway.clarify_instructions"))
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).
             from tools.clarify_gateway import mark_awaiting_text
             mark_awaiting_text(clarify_id)
         else:
-            text = f"❓ {question}"
+            text = t("gateway.clarify_question", question=question)
         return await self.send(
             chat_id=chat_id,
             content=text,
@@ -2766,7 +2767,7 @@ class BasePlatformAdapter(ABC):
         or file attachments (Discord). Default falls back to sending the
         file path as text.
         """
-        text = f"🔊 Audio: {audio_path}"
+        text = t("gateway.audio_fallback_caption", audio_path=audio_path)
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -2828,7 +2829,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses to send files as downloadable attachments.
         Default falls back to sending the file path as text.
         """
-        text = f"📎 File: {file_path}"
+        text = t("gateway.file_fallback_caption", file_path=file_path)
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -2849,7 +2850,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses for native photo attachments.
         Default falls back to sending the file path as text.
         """
-        text = f"🖼️ Image: {image_path}"
+        text = t("gateway.image_fallback_caption", image_path=image_path)
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3480,10 +3481,7 @@ class BasePlatformAdapter(ABC):
             else:
                 # All retries exhausted (loop completed without break) — notify user
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
-                notice = (
-                    "\u26a0\ufe0f Message delivery failed after multiple attempts. "
-                    "Please try again \u2014 your request was processed but the response could not be sent."
-                )
+                notice = t("gateway.delivery_failed")
                 try:
                     await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
                 except Exception as notify_err:
@@ -3494,7 +3492,7 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,
-            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            content=t("gateway.response_formatting_failed", content=content[:3500]),
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -4549,10 +4547,11 @@ class BasePlatformAdapter(ABC):
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                 await self.send(
                     chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
+                    content=t(
+                        "gateway.api_error_generic",
+                        error_type=error_type,
+                        error_detail=error_detail,
+                        status_hint="",
                     ),
                     metadata=_thread_metadata,
                 )

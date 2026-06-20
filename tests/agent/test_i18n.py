@@ -227,3 +227,131 @@ def test_t_resolves_real_string_in_source_checkout():
     regressions independent of packaging."""
     assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
     assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"
+
+
+# ---------------------------------------------------------------------------
+# Safe formatter -- unknown placeholders must survive, not crash.
+# ---------------------------------------------------------------------------
+
+def test_safe_format_substitutes_known():
+    assert i18n._safe_format("hi {name}", name="Bob") == "hi Bob"
+
+
+def test_safe_format_keeps_unknown_placeholder():
+    # {city} is never supplied -- it must stay literal, and {name} still fills.
+    assert i18n._safe_format("{name} in {city}", name="Bob") == "Bob in {city}"
+
+
+def test_safe_format_unknown_with_format_spec_kept_raw():
+    # A format spec on a missing key (e.g. {n:02d}) must not raise.
+    assert i18n._safe_format("v={n:02d}", other=1) == "v={n:02d}"
+
+
+def test_safe_format_no_kwargs_is_identity():
+    assert i18n._safe_format("plain {x}") == "plain {x}"
+
+
+def test_safe_format_real_value_shaped_like_placeholder_with_spec():
+    # A real kwarg value that looks like "{x}" must be formatted, not mistaken
+    # for a re-emitted missing token.
+    # "{x}" is 3 chars; right-justified to width 10 → 7 spaces + "{x}".
+    assert i18n._safe_format("{val:>10}", val="{x}") == "       {x}"
+
+
+# ---------------------------------------------------------------------------
+# {name} resolution
+# ---------------------------------------------------------------------------
+
+def test_agent_display_name_default(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict", lambda: {})
+    assert i18n.agent_display_name() == "Hermes"
+
+
+def test_agent_display_name_from_config(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(
+        i18n, "_load_config_dict",
+        lambda: {"ui": {"theme": {"branding": {"agent_name": "Hermione"}}}},
+    )
+    assert i18n.agent_display_name() == "Hermione"
+
+
+def test_t_auto_injects_name_when_template_uses_it(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "agent_display_name", lambda: "Ada")
+    # An override-style template with {name}, resolved with no explicit kwargs.
+    monkeypatch.setattr(i18n, "_gateway_overrides",
+                        lambda: {"gateway.restart_success": "{name} is back"})
+    assert i18n.t("gateway.restart_success", lang="en") == "Ada is back"
+
+
+# ---------------------------------------------------------------------------
+# gateway.system_messages overrides -- resolution order: override > ru > en > key
+# ---------------------------------------------------------------------------
+
+def test_override_beats_catalog(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(
+        i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages": {"goal_cleared": "custom cleared"}}},
+    )
+    # goal_cleared exists in the real catalog; override must win, in any lang.
+    assert i18n.t("gateway.goal_cleared", lang="ru") == "custom cleared"
+    i18n.reset_language_cache()
+    assert i18n.t("gateway.goal_cleared", lang="en") == "custom cleared"
+
+
+def test_override_falls_through_to_catalog_when_absent(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict", lambda: {})
+    assert i18n.t("gateway.goal_cleared", lang="en") == "✓ Goal cleared."
+
+
+def test_override_formats_with_safe_formatter(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(
+        i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages":
+                 {"long_running": "still going {minutes}m {bogus}"}}},
+    )
+    # {minutes} fills, unknown {bogus} stays literal -- no crash.
+    assert i18n.t("gateway.long_running", lang="en", minutes=7) == "still going 7m {bogus}"
+
+
+def test_override_cache_reset(monkeypatch):
+    i18n.reset_language_cache()
+    cfg = {"gateway": {"system_messages": {"goal_cleared": "v1"}}}
+    monkeypatch.setattr(i18n, "_load_config_dict", lambda: cfg)
+    assert i18n.t("gateway.goal_cleared", lang="en") == "v1"
+    cfg["gateway"]["system_messages"]["goal_cleared"] = "v2"
+    assert i18n.t("gateway.goal_cleared", lang="en") == "v1"  # cached
+    i18n.reset_language_cache()
+    assert i18n.t("gateway.goal_cleared", lang="en") == "v2"  # re-read
+
+
+# ---------------------------------------------------------------------------
+# New gateway lifecycle / error-reply keys (Task 4)
+# ---------------------------------------------------------------------------
+
+NEW_GATEWAY_KEYS = [
+    "gateway.restart_success", "gateway.gateway_online", "gateway.subagent_working",
+    "gateway.queued_next_turn", "gateway.interrupting_task", "gateway.long_running",
+    "gateway.no_activity_warning", "gateway.provider_auth_failed",
+    "gateway.provider_rejected", "gateway.provider_rate_limited",
+    "gateway.provider_failed", "gateway.session_too_large", "gateway.request_failed",
+    "gateway.processing_stopped", "gateway.empty_response",
+    "gateway.no_response_generated",
+]
+
+
+@pytest.mark.parametrize("key", NEW_GATEWAY_KEYS)
+def test_new_gateway_keys_present_en_and_ru(key):
+    assert i18n.t(key, lang="en") != key, f"{key} missing in en.yaml"
+    assert i18n.t(key, lang="ru") != key, f"{key} missing in ru.yaml"
+
+
+def test_new_gateway_keys_ru_is_translated():
+    # A representative key must actually differ from English (real translation).
+    assert i18n.t("gateway.processing_stopped", lang="ru") != \
+        i18n.t("gateway.processing_stopped", lang="en")

@@ -24,6 +24,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -343,9 +345,11 @@ def summarize_background_review_actions(
                 continue
 
         if is_skill:
-            label = "Skill"
+            label = t("gateway.review_label_skill")
         elif target:
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+            label = (t("gateway.review_label_memory") if target == "memory"
+                     else t("gateway.review_label_user_profile") if target == "user"
+                     else target)
         else:
             continue
 
@@ -369,15 +373,15 @@ def summarize_background_review_actions(
                         "…" if len(new_string) > 80 else ""
                     )
                     actions.append(
-                        f"📝 Skill '{skill_name}' patched: "
-                        f"\"{old_preview}\" → \"{new_preview}\""
+                        t("gateway.review_skill_patched",
+                          name=skill_name, old=old_preview, new=new_preview)
                     )
                 elif action == "create" and description:
-                    actions.append(f"📝 Skill '{skill_name}' created: {description}")
+                    actions.append(t("gateway.review_skill_created", name=skill_name, description=description))
                 elif action == "edit" and description:
-                    actions.append(f"📝 Skill '{skill_name}' rewritten: {description}")
+                    actions.append(t("gateway.review_skill_rewritten", name=skill_name, description=description))
                 else:
-                    actions.append(f"📝 {message}" if message else f"Skill {action}")
+                    actions.append(t("gateway.review_skill_message", message=message) if message else t("gateway.review_skill_action", action=action))
             elif operations:
                 for op in operations:
                     op = op or {}
@@ -386,24 +390,24 @@ def summarize_background_review_actions(
                     op_old = (op.get("old_text") or "")
                     if op_act == "add" and op_content:
                         preview = op_content[:max_preview] + ("…" if len(op_content) > max_preview else "")
-                        actions.append(f"{label} ➕ {preview}")
+                        actions.append(t("gateway.review_mem_add", label=label, preview=preview))
                     elif op_act == "replace" and op_content:
                         preview = op_content[:max_preview] + ("…" if len(op_content) > max_preview else "")
-                        actions.append(f"{label} ✏️ {preview}")
+                        actions.append(t("gateway.review_mem_edit", label=label, preview=preview))
                     elif op_act == "remove" and op_old:
                         preview = op_old[:60] + ("…" if len(op_old) > 60 else "")
-                        actions.append(f"{label} ➖ {preview}")
+                        actions.append(t("gateway.review_mem_remove", label=label, preview=preview))
             elif action == "add" and content:
                 preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
-                actions.append(f"{label} ➕ {preview}")
+                actions.append(t("gateway.review_mem_add", label=label, preview=preview))
             elif action == "replace" and content:
                 preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
-                actions.append(f"{label} ✏️ {preview}")
+                actions.append(t("gateway.review_mem_edit", label=label, preview=preview))
             elif action == "remove" and old_text:
                 preview = old_text[:60] + ("…" if len(old_text) > 60 else "")
-                actions.append(f"{label} ➖ {preview}")
+                actions.append(t("gateway.review_mem_remove", label=label, preview=preview))
             else:
-                actions.append(f"{label} updated")
+                actions.append(t("gateway.review_mem_updated", label=label))
         elif (
             "added" in message_lower
             or "replaced" in message_lower
@@ -412,7 +416,7 @@ def summarize_background_review_actions(
             or (target and "add" in message.lower())
             or "Entry added" in message
         ):
-            actions.append(f"{label} updated")
+            actions.append(t("gateway.review_mem_updated", label=label))
     return actions
 
 
@@ -660,7 +664,7 @@ def _run_review_in_thread(
             if _bg_cb:
                 try:
                     _bg_cb(
-                        f"💾 Self-improvement review: {summary}"
+                        t("gateway.self_review_header", summary=summary)
                     )
                 except Exception:
                     pass
