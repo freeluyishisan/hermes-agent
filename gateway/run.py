@@ -14058,7 +14058,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Send typing indicator
         _adapter = self.adapters.get(source.platform)
-        if _adapter:
+        if _adapter and getattr(_adapter, "_typing_indicator_enabled", lambda: True)():
             try:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
             except Exception:
@@ -14861,7 +14861,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if await _roll_progress_overflow_if_needed():
                         _last_edit_ts = time.monotonic()
                         await asyncio.sleep(0.3)
-                        if _run_still_current():
+                        if _run_still_current() and getattr(adapter, "_typing_indicator_enabled", lambda: True)():
                             await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
                         continue
 
@@ -14947,7 +14947,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
-                    if _run_still_current():
+                    if _run_still_current() and getattr(adapter, "_typing_indicator_enabled", lambda: True)():
                         await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
 
                 except queue.Empty:
@@ -16721,7 +16721,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
                 _followup_adapter = self.adapters.get(source.platform)
-                if _followup_adapter:
+                if _followup_adapter and getattr(_followup_adapter, "_typing_indicator_enabled", lambda: True)():
                     try:
                         await _followup_adapter.send_typing(
                             source.chat_id,
