@@ -523,3 +523,24 @@ class TestToolProgressGrouping:
             resolve_display_setting(config, "telegram", "tool_progress_grouping")
             == "separate"
         )
+
+
+class TestThinkingProgress:
+    """resolve_display_setting() for the live-thinking progress knob."""
+
+    def test_default_is_false(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "thinking_progress") is False
+
+    def test_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "thinking_progress": False,
+                "platforms": {"matrix": {"thinking_progress": True}},
+            }
+        }
+        assert resolve_display_setting(config, "matrix", "thinking_progress") is True
+        assert resolve_display_setting(config, "telegram", "thinking_progress") is False
