@@ -10063,19 +10063,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         allowed_preview = sorted(policy.user_allowed_commands)
         if allowed_preview:
-            suffix = (
-                "You can run: "
-                + ", ".join(f"/{c}" for c in allowed_preview[:12])
+            allowed_list = (
+                ", ".join(f"/{c}" for c in allowed_preview[:12])
                 + ("…" if len(allowed_preview) > 12 else "")
-                + ". Use /whoami for the full list."
             )
+            return t("gateway.admin_only_with_allowed", cmd=canonical_cmd, allowed_list=allowed_list)
         else:
-            suffix = (
-                "No slash commands are enabled for non-admins on this "
-                "platform. Ask an admin to add you to allow_admin_from "
-                "or to set user_allowed_commands."
-            )
-        return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
+            return t("gateway.admin_only_no_commands", cmd=canonical_cmd)
 
 
 
@@ -10210,7 +10204,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return handle_suggestions_command(args, origin=origin, surface="gateway")
         except Exception as e:
             logger.debug("suggestions command failed: %s", e)
-            return f"Suggestions command failed: {e}"
+            return t("gateway.suggestions_failed", error=e)
 
     async def _handle_blueprint_command(self, event: MessageEvent):
         """Handle /blueprint in the gateway.
@@ -10926,7 +10920,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    t("gateway.bg_task_no_creds", task_id=task_id),
                     metadata=_thread_metadata,
                 )
                 return
@@ -11014,7 +11008,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                header = t("gateway.bg_task_complete", preview=preview)
 
                 if text_content:
                     await adapter.send(
@@ -11082,7 +11076,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n{t("gateway.no_response_generated")}',
+                    content=t("gateway.bg_task_complete", preview=preview) + t("gateway.no_response_generated"),
                     metadata=_thread_metadata,
                 )
 
@@ -11091,7 +11085,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
+                    content=t("gateway.bg_task_failed", task_id=task_id, error=e),
                     metadata=_thread_metadata,
                 )
             except Exception:
@@ -11396,7 +11390,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
         chat_id = str(source.chat_id or "")
         if not chat_id:
-            return "Could not determine chat ID."
+            return t("gateway.topic_no_chat_id")
         # No-op if never enabled.
         try:
             currently_enabled = self._session_db.is_telegram_topic_mode_enabled(
@@ -11406,7 +11400,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             currently_enabled = False
         if not currently_enabled:
-            return "Multi-session topic mode is not currently enabled for this chat."
+            return t("gateway.topic_not_enabled")
         try:
             self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
         except Exception as exc:
@@ -11418,12 +11412,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(chat_id, None)
-        return (
-            "Multi-session topic mode is now OFF for this chat.\n\n"
-            "Existing topics in Telegram aren't removed — they'll just stop "
-            "being gated as independent sessions. The root DM works as a "
-            "normal Hermes chat again. Run /topic to re-enable later."
-        )
+        return t("gateway.topic_disabled")
 
 
     def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
@@ -11464,11 +11453,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ])
         else:
             lines.extend([
-                "No previous unlinked Telegram sessions found.",
+                t("gateway.topic_no_unlinked_sessions"),
                 "",
-                "To restore a previous session later:",
-                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
-                "2. Send /topic <session-id> inside that topic.",
+                t("gateway.topic_restore_instructions"),
             ])
         return "\n".join(lines)
 
@@ -11477,15 +11464,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source = event.source
         session_id = self._session_db.resolve_session_id(raw_session_id.strip())
         if not session_id:
-            return f"Session not found: {raw_session_id.strip()}"
+            return t("gateway.session_not_found", session_id=raw_session_id.strip())
 
         session = self._session_db.get_session(session_id)
         if not session:
-            return f"Session not found: {raw_session_id.strip()}"
+            return t("gateway.session_not_found", session_id=raw_session_id.strip())
         if str(session.get("source") or "") != "telegram":
-            return "That session is not a Telegram session and cannot be restored into this topic."
+            return t("gateway.session_not_telegram")
         if str(session.get("user_id") or "") != str(source.user_id):
-            return "That session does not belong to this Telegram user."
+            return t("gateway.session_wrong_user")
 
         linked = self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
         current_binding = self._session_db.get_telegram_topic_binding(
@@ -11494,7 +11481,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if linked:
             if not current_binding or current_binding.get("session_id") != session_id:
-                return "That session is already linked to another Telegram topic."
+                return t("gateway.session_already_linked")
 
         session_key = self._session_key_for_source(source)
         try:
@@ -11508,7 +11495,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except ValueError as exc:
             if "already linked" in str(exc):
-                return "That session is already linked to another Telegram topic."
+                return t("gateway.session_already_linked")
             raise
 
         title = self._session_db.get_session_title(session_id) or session_id
@@ -11521,9 +11508,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             last_assistant = None
 
-        response = f"Session restored: {title}"
+        response = t("gateway.session_restored", title=title)
         if last_assistant:
-            response += f"\n\nLast Hermes message:\n{last_assistant}"
+            response += t("gateway.session_restored_last_msg", content=last_assistant)
         return response
 
 
@@ -11698,7 +11685,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _on_confirm(choice: str):
             if choice == "cancel":
-                return f"🟡 /{command} cancelled. Conversation unchanged."
+                return t("gateway.command_cancelled", command=command)
             if choice == "always":
                 try:
                     from cli import save_config_value
