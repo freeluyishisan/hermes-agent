@@ -355,3 +355,69 @@ def test_new_gateway_keys_ru_is_translated():
     # A representative key must actually differ from English (real translation).
     assert i18n.t("gateway.processing_stopped", lang="ru") != \
         i18n.t("gateway.processing_stopped", lang="en")
+
+
+# ---------------------------------------------------------------------------
+# Category-based suppression
+# ---------------------------------------------------------------------------
+
+def test_suppress_mutes_category(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages": {"suppress": ["progress"]}}})
+    assert i18n.t("gateway.long_running", lang="en", minutes=5, status_detail="") == ""
+    # a non-suppressed category still renders
+    assert i18n.t("gateway.restart_success", lang="en") != ""
+
+
+def test_suppress_all_mutes_three_mutable_only(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages": {"suppress": "all"}}})
+    assert i18n.t("gateway.long_running", lang="en", minutes=5, status_detail="") == ""  # progress
+    assert i18n.t("gateway.restart_success", lang="en") == ""                            # lifecycle
+    assert i18n.t("gateway.codex_gpt55_autoraise_notice", lang="en", to_pct=85, from_pct=50) == ""  # info
+    # errors / approval / commands NOT suppressed even under "all"
+    assert i18n.t("gateway.provider_failed", lang="en") != ""        # errors
+    assert i18n.t("gateway.tg_btn_deny", lang="en") != ""            # approval
+    assert i18n.t("gateway.whoami_user", lang="en", platform="tg", scope="dm",
+                  user_id="1", runnable_str="x") != ""               # commands
+
+
+def test_suppress_ignores_non_mutable_and_unknown(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages": {"suppress": ["errors", "bogus", "info"]}}})
+    # errors/bogus ignored; info honored
+    assert i18n._suppressed_categories() == frozenset({"info"})
+    assert i18n.t("gateway.provider_failed", lang="en") != ""        # errors still shown
+
+
+def test_suppress_beats_custom_override(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_load_config_dict",
+        lambda: {"gateway": {"system_messages": {
+            "suppress": ["info"],
+            "codex_gpt55_autoraise_notice": "custom text"}}})
+    assert i18n.t("gateway.codex_gpt55_autoraise_notice", lang="en", to_pct=85, from_pct=50) == ""
+
+
+def test_suppress_cache_reset(monkeypatch):
+    i18n.reset_language_cache()
+    cfg = {"gateway": {"system_messages": {"suppress": ["progress"]}}}
+    monkeypatch.setattr(i18n, "_load_config_dict", lambda: cfg)
+    assert i18n.t("gateway.long_running", lang="en", minutes=1, status_detail="") == ""
+    cfg["gateway"]["system_messages"]["suppress"] = []
+    assert i18n.t("gateway.long_running", lang="en", minutes=1, status_detail="") == ""  # cached
+    i18n.reset_language_cache()
+    assert i18n.t("gateway.long_running", lang="en", minutes=1, status_detail="") != ""  # re-read
+
+
+def test_every_mapped_key_exists_in_en_catalog():
+    en = _flatten(_load_raw("en"))
+    missing = [k for k in i18n.GATEWAY_MESSAGE_CATEGORIES if k not in en]
+    assert not missing, f"category-map keys absent from en.yaml: {missing}"
+
+
+def test_map_categories_are_mutable_only():
+    assert set(i18n.GATEWAY_MESSAGE_CATEGORIES.values()) <= {"progress", "lifecycle", "info"}
