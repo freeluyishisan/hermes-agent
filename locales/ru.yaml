@@ -22,6 +22,7 @@ gateway:
   no_active_goal:   "Нет активной цели."
   config_read_failed: "⚠️ Не удалось прочитать config.yaml: {error}"
   config_save_failed: "⚠️ Не удалось сохранить конфигурацию: {error}"
+  codex_gpt55_autoraise_notice: "ℹ Codex gpt-5.5 ограничивает контекст 272K токенами, поэтому автосжатие было повышено до {to_pct}% (с {from_pct}%), чтобы использовать больше окна перед обобщением.\n  Отказаться: hermes config set compression.codex_gpt55_autoraise false"
 
   # Жизненный цикл: перезапуск / онлайн / занятость / heartbeat длительной задачи.
   restart_success:       "♻ Gateway перезапущен. Сессия продолжается."

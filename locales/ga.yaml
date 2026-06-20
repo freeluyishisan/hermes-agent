@@ -26,6 +26,7 @@ gateway:
   no_active_goal:   "Níl aon sprioc ghníomhach ann."
   config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
   config_save_failed: "⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}"
+  codex_gpt55_autoraise_notice: "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to {to_pct}% (from {from_pct}%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
 
   restart_success:       "♻ Gateway restarted successfully. Your session continues."
   gateway_online:        "♻️ Gateway online — Hermes is back and ready."

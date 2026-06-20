@@ -22,6 +22,7 @@ gateway:
   no_active_goal:   "Kein aktives Ziel."
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
   config_save_failed: "⚠️ Konfiguration konnte nicht gespeichert werden: {error}"
+  codex_gpt55_autoraise_notice: "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to {to_pct}% (from {from_pct}%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
 
   restart_success:       "♻ Gateway restarted successfully. Your session continues."
   gateway_online:        "♻️ Gateway online — Hermes is back and ready."
