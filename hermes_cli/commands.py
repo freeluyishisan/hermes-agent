@@ -18,11 +18,13 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+_CommandEntryT = TypeVar("_CommandEntryT", bound=tuple[Any, ...])
 
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
@@ -109,7 +111,25 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
+
+    CommandDef("blockers", "Show true blockers across active Buidl Goal OS goals", "Session"),
+    CommandDef("plan", "Create or inspect the next Buidl Goal OS plan card", "Session",
+               args_hint="[title]"),
+    CommandDef("execute", "Mark the next Buidl Goal OS card in progress", "Session",
+               args_hint="[card-id]"),
+    CommandDef("review", "Show Buidl Goal OS cards waiting for review", "Session"),
+    CommandDef("verify", "Record Buidl Goal OS verification evidence", "Session",
+               args_hint="[evidence]"),
+    CommandDef("fix-ci", "Create a Buidl Goal OS card for CI/check failure repair", "Session",
+               args_hint="[failure]"),
+    CommandDef("ship", "Show Buidl Goal OS ship-readiness without deploying", "Session"),
+    CommandDef("learn", "Record a sanitized Buidl Goal OS lesson candidate", "Session",
+               args_hint="[lesson]"),
+    CommandDef("checkpoint", "Record a Buidl Goal OS checkpoint", "Session",
+               args_hint="[note]"),
+
     CommandDef("status", "Show session, model, token, and context info", "Session"),
+    CommandDef("approval-status", "Show Clio MVP approval gate diagnostics without secrets", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -408,8 +428,11 @@ def _resolve_config_gates() -> set[str]:
         return set()
     result: set[str] = set()
     for cmd in gated:
+        gate = cmd.gateway_config_gate
+        if gate is None:
+            continue
         val: Any = cfg
-        for key in cmd.gateway_config_gate.split("."):
+        for key in gate.split("."):
             if isinstance(val, dict):
                 val = val.get(key)
             else:
@@ -615,9 +638,9 @@ def _sanitize_telegram_name(raw: str) -> str:
 
 
 def _clamp_command_names(
-    entries: list[tuple[str, ...]],
+    entries: list[_CommandEntryT],
     reserved: set[str],
-) -> list[tuple[str, ...]]:
+) -> list[_CommandEntryT]:
     """Enforce 32-char command name limit with collision avoidance.
 
     Both Telegram and Discord cap slash command names at 32 characters.
@@ -631,7 +654,7 @@ def _clamp_command_names(
     metadata that survives the rename.
     """
     used: set[str] = set(reserved)
-    result: list[tuple] = []
+    result: list[_CommandEntryT] = []
     for entry in entries:
         name, desc, *extra = entry
         if len(name) > _CMD_NAME_LIMIT:
@@ -649,7 +672,7 @@ def _clamp_command_names(
         if name in used:
             continue
         used.add(name)
-        result.append((name, desc, *extra))
+        result.append(cast(_CommandEntryT, (name, desc, *extra)))
     return result
 
 
@@ -1040,10 +1063,11 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # ahead of both canonical names and the rest of the aliases. Anything not
 # listed here still degrades gracefully (reachable via /hermes <command>).
 # Keep this list TIGHT: every pinned alias takes a slot a canonical command
-# would otherwise get, and the Telegram-parity test fails when a canonical
-# gets clamped ("reset" was unpinned for exactly that — /new keeps its
-# native slot, the alias spelling stays reachable via /hermes reset).
-_SLACK_PRIORITY_ALIASES = ("btw", "bg")
+
+# would otherwise get. If the registry grows, low-frequency operational
+# commands should move to /hermes routing instead of dropping these aliases.
+_SLACK_PRIORITY_ALIASES = ("btw", "bg", "reset", "q")
+
 
 # Canonical commands intentionally NOT given a native Slack slash slot. Slack
 # caps apps at 50 slash commands and the registry is at that ceiling; rather
@@ -1056,7 +1080,27 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
 #   - billing: the terminal-billing surface (buy/auto-reload/limit); /hermes billing.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "debug"})
+
+#   - version: low-frequency info surface; reached via /hermes version on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({
+    "credits",
+    "billing",
+    "debug",
+    "version",
+    # Buidl Goal OS operational commands remain dispatchable through
+    # /hermes <command>, but do not displace priority native Slack slashes
+    # inside Slack's 50-command cap.
+    "blockers",
+    "plan",
+    "execute",
+    "review",
+    "verify",
+    "fix-ci",
+    "ship",
+    "learn",
+    "checkpoint",
+})
+
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1115,6 +1159,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
+
+
+
     # Priority pass: pin high-value aliases (e.g. /btw, /bg, /reset) ahead of
     # everything except /hermes, so a new canonical command can never silently
     # clamp them off the 50-slash cap. Each alias borrows its parent command's
@@ -1129,6 +1176,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         cmd = _alias_to_cmd.get(alias)
         if cmd is not None:
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+
+
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
