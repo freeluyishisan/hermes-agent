@@ -3933,15 +3933,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
-                    await query.answer(text="This approval has already been resolved.")
+                    await query.answer(text=t("gateway.tg_approval_resolved"))
                     return
 
                 # Map choice to human-readable label
                 label_map = {
-                    "once": "✅ Approved once",
+                    "once": t("gateway.tg_approved_once"),
                     "session": t("gateway.tg_approved_session"),
                     "always": t("gateway.tg_approved_permanently"),
-                    "deny": "❌ Denied",
+                    "deny": t("gateway.tg_denied"),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
@@ -3999,11 +3999,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 session_key = self._slash_confirm_state.pop(confirm_id, None)
                 if not session_key:
-                    await query.answer(text="This prompt has already been resolved.")
+                    await query.answer(text=t("gateway.tg_prompt_resolved"))
                     return
 
                 label_map = {
-                    "once": "✅ Approved once",
+                    "once": t("gateway.tg_approved_once"),
                     "always": t("gateway.tg_always_approve_label"),
                     "cancel": t("gateway.tg_cancelled_label"),
                 }
@@ -4099,7 +4099,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 session_key = self._clarify_state.get(clarify_id)
                 if not session_key:
-                    await query.answer(text="This prompt has already been resolved.")
+                    await query.answer(text=t("gateway.tg_prompt_resolved"))
                     return
 
                 user_display = getattr(query.from_user, "first_name", "User")

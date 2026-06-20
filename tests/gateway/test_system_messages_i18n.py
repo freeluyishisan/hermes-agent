@@ -293,6 +293,10 @@ _TELEGRAM_SRC = _TELEGRAM_PY.read_text(encoding="utf-8")
     ("gateway.tg_group_not_found", {}),
     ("gateway.tg_model_selection_cancelled", {}),
     ("gateway.tg_expensive_warning_header", {}),
+    ("gateway.tg_approved_once", {}),
+    ("gateway.tg_denied", {}),
+    ("gateway.tg_approval_resolved", {}),
+    ("gateway.tg_prompt_resolved", {}),
     ("gateway.tg_approved_session", {}),
     ("gateway.tg_approved_permanently", {}),
     ("gateway.tg_always_approve_label", {}),
@@ -356,6 +360,11 @@ def test_batchD_key_resolves_in_russian(key, kwargs):
     '"✏️ Type your answer in the chat."',
     '"Invalid choice."',
     '"Invalid gmail-triage data."',
+    # Batch D fixes — approval-result labels now wrapped
+    '"✅ Approved once"',
+    '"❌ Denied"',
+    '"This approval has already been resolved."',
+    '"This prompt has already been resolved."',
 ])
 def test_batchD_literal_not_unwrapped_in_telegram(literal):
     assert literal not in _TELEGRAM_SRC, (
