@@ -370,3 +370,41 @@ def test_batchD_literal_not_unwrapped_in_telegram(literal):
     assert literal not in _TELEGRAM_SRC, (
         f"unwrapped English literal still present in telegram.py: {literal!r}"
     )
+
+
+# ---- Batch F: base.py platform adapter strings ----
+
+_BASE_PY = Path(__file__).parents[2] / "gateway" / "platforms" / "base.py"
+_BASE_SRC = _BASE_PY.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("key,kwargs", [
+    ("gateway.delivery_failed", {}),
+    ("gateway.response_formatting_failed", {"content": "some text"}),
+    ("gateway.audio_fallback_caption", {"audio_path": "/tmp/audio.ogg"}),
+    ("gateway.file_fallback_caption", {"file_path": "/tmp/file.pdf"}),
+    ("gateway.image_fallback_caption", {"image_path": "/tmp/image.png"}),
+    ("gateway.clarify_question", {"question": "What do you prefer?"}),
+    ("gateway.clarify_instructions", {}),
+])
+def test_batchF_key_resolves_in_russian(key, kwargs):
+    """Each Batch F key must resolve (not raise KeyError) in Russian."""
+    result = i18n.t(key, lang="ru", **kwargs)
+    assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
+
+
+@pytest.mark.parametrize("literal", [
+    # Strings now wrapped with t() in gateway/platforms/base.py
+    '"⚠️ Message delivery failed after multiple attempts.',   # delivery_failed
+    '"(Response formatting failed, plain text:)',              # response_formatting_failed
+    'f"🔊 Audio: {audio_path}"',                              # audio_fallback_caption
+    'f"📎 File: {file_path}"',                                # file_fallback_caption
+    'f"🖼️ Image: {image_path}"',                              # image_fallback_caption
+    'f"❓ {question}"',                                        # clarify_question
+    '"Reply with the number, the option text',                 # clarify_instructions
+    '"Sorry, I encountered an error ({error_type})',           # api_error_generic (base.py)
+])
+def test_batchF_literal_not_unwrapped_in_base(literal):
+    assert literal not in _BASE_SRC, (
+        f"unwrapped English literal still present in base.py: {literal!r}"
+    )
