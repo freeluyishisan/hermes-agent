@@ -94,6 +94,7 @@ import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
+import { usePluginStylesheets } from "@/plugins/usePluginStylesheets";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
@@ -279,6 +280,20 @@ function partitionSidebarNav(
   return { coreItems, pluginItems };
 }
 
+/** Stable element refs so plugin-manifest refresh does not remount builtin pages. */
+const STABLE_BUILTIN_ROUTE_ELEMENTS = new Map<string, ReactNode>();
+
+function getStableRouteElement(
+  path: string,
+  Component: ComponentType,
+): ReactNode {
+  const cached = STABLE_BUILTIN_ROUTE_ELEMENTS.get(path);
+  if (cached) return cached;
+  const element = <Component key={path} />;
+  STABLE_BUILTIN_ROUTE_ELEMENTS.set(path, element);
+  return element;
+}
+
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
@@ -313,7 +328,11 @@ function buildRoutes(
         element: <PluginPage name={om.name} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({
+        key: `builtin:${path}`,
+        path,
+        element: getStableRouteElement(path, Component),
+      });
     }
   }
 
@@ -377,6 +396,7 @@ export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
+  usePluginStylesheets(manifests, pathname);
   const { theme } = useTheme();
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpenFromStorage);
   const closeSidebar = useCallback(() => {
@@ -699,10 +719,15 @@ export default function App() {
           </aside>
           )}
 
+          <div
+            className={cn(
+              "relative flex min-h-0 min-w-0 flex-1 flex-col",
+              SHELL_Z,
+            )}
+          >
           {!isMobile && !sidebarOpen ? (
             <div
               className={cn(
-                SHELL_Z,
                 "shrink-0 border-b border-current/20",
                 "bg-background-base/95 px-3 py-2 sm:px-6",
               )}
@@ -723,11 +748,11 @@ export default function App() {
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div
               className={cn(
-                "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
+                "relative z-2 flex min-h-0 min-w-0 flex-1 flex-col",
                 "px-3 sm:px-6",
                 isChatRoute
                   ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6",
+                  : "py-4 sm:py-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
@@ -786,6 +811,7 @@ export default function App() {
               <PluginSlot name="post-main" />
             </div>
           </PageHeaderProvider>
+          </div>
         </div>
       </div>
 
