@@ -1517,18 +1517,66 @@ class MatrixAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
 
+        # Pre-check: determine whether the target room uses E2EE so we
+        # can encrypt text explicitly.  The mautrix SDK's
+        # EncryptingAPI.send_message_event() has its own encryption
+        # path, but it relies on MemoryStateStore.is_encrypted()
+        # returning a correct value.  When the store entry is stale or
+        # missing the SDK falls back to a /state API call which can
+        # return MNotFound for rooms joined after the last sync —
+        # silently sending cleartext.  Mirror the explicit guard from
+        # _upload_and_send for defense-in-depth.
+        _room_encrypted = False
+        if self._encryption and getattr(self._client, "crypto", None):
+            _ss = getattr(self._client, "state_store", None)
+            if _ss:
+                try:
+                    _room_encrypted = bool(await _ss.is_encrypted(RoomID(chat_id)))
+                except Exception as exc:
+                    logger.error(
+                        "Matrix: cannot determine room encryption state "
+                        "for %s: %s — refusing to send plaintext",
+                        chat_id, exc,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"Cannot determine room encryption state: {exc}",
+                    )
+
         last_event_id = None
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
 
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
+            # If the room is encrypted, explicitly encrypt the text
+            # content through the OlmMachine before sending.  Use
+            # disable_encryption=True so EncryptingAPI doesn't attempt
+            # a second encryption pass.
+            send_event_type = EventType.ROOM_MESSAGE
+            disable_enc = False
+            if _room_encrypted:
+                try:
+                    msg_content = await self._client.encrypt(
+                        RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content,
+                    )
+                    send_event_type = EventType.ROOM_ENCRYPTED
+                    disable_enc = True
+                except Exception as exc:
+                    logger.error(
+                        "Matrix: text encryption failed for %s: %s", chat_id, exc,
+                    )
+                    return SendResult(success=False, error=str(exc))
+
             try:
                 event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
-                        RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
-                        msg_content,
+                    asyncio.ensure_future(
+                        self._client.send_message_event(
+                            RoomID(chat_id),
+                            send_event_type,
+                            msg_content,
+                            disable_encryption=disable_enc,
+                        ),
                     ),
                     timeout=45,
                 )
@@ -1539,11 +1587,27 @@ class MatrixAdapter(BasePlatformAdapter):
                 if self._encryption and getattr(self._client, "crypto", None):
                     try:
                         await self._client.crypto.share_keys()
+                        # Re-encrypt with fresh keys.
+                        retry_content = self._build_text_message_content(chunk)
+                        self._apply_relation_metadata(
+                            retry_content, reply_to=reply_to, metadata=metadata,
+                        )
+                        retry_type = EventType.ROOM_MESSAGE
+                        retry_disable = False
+                        if _room_encrypted:
+                            retry_content = await self._client.encrypt(
+                                RoomID(chat_id), EventType.ROOM_MESSAGE, retry_content,
+                            )
+                            retry_type = EventType.ROOM_ENCRYPTED
+                            retry_disable = True
                         event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
-                                msg_content,
+                            asyncio.ensure_future(
+                                self._client.send_message_event(
+                                    RoomID(chat_id),
+                                    retry_type,
+                                    retry_content,
+                                    disable_encryption=retry_disable,
+                                ),
                             ),
                             timeout=45,
                         )
@@ -1664,11 +1728,31 @@ class MatrixAdapter(BasePlatformAdapter):
             "event_id": message_id,
         }
 
+        # Encrypt edit content for E2EE rooms (same guard as send()).
+        send_event_type = EventType.ROOM_MESSAGE
+        disable_enc = False
+        if self._encryption and getattr(self._client, "crypto", None):
+            _ss = getattr(self._client, "state_store", None)
+            if _ss:
+                try:
+                    if await _ss.is_encrypted(RoomID(chat_id)):
+                        msg_content = await self._client.encrypt(
+                            RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content,
+                        )
+                        send_event_type = EventType.ROOM_ENCRYPTED
+                        disable_enc = True
+                except Exception as exc:
+                    logger.error(
+                        "Matrix: edit encryption failed for %s: %s", chat_id, exc,
+                    )
+                    return SendResult(success=False, error=str(exc))
+
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                send_event_type,
                 msg_content,
+                disable_encryption=disable_enc,
             )
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:

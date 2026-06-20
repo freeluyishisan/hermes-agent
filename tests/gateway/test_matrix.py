@@ -2498,6 +2498,8 @@ class TestMatrixEncryptedSendFallback:
         mock_crypto = MagicMock()
         mock_crypto.share_keys = AsyncMock()
         fake_client.crypto = mock_crypto
+        # Room is not encrypted — send() should use plain path.
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=False)
         adapter._client = fake_client
 
         result = await adapter.send("!room:example.org", "hello")
@@ -2506,6 +2508,147 @@ class TestMatrixEncryptedSendFallback:
         assert result.message_id == "$event123"
         mock_crypto.share_keys.assert_awaited_once()
         assert fake_client.send_message_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_room_encrypts_text(self):
+        """send() should explicitly encrypt text for encrypted rooms."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        encrypted_content = {"algorithm": "m.megolm.v1", "ciphertext": "..."}
+        fake_client.encrypt = AsyncMock(return_value=encrypted_content)
+        fake_client.send_message_event = AsyncMock(return_value="$evt_enc")
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        fake_client.crypto = MagicMock()
+        adapter._client = fake_client
+
+        result = await adapter.send("!room:example.org", "secret message")
+
+        assert result.success is True
+        assert result.message_id == "$evt_enc"
+        fake_client.encrypt.assert_awaited_once()
+        # send_message_event should be called with ROOM_ENCRYPTED and disable_encryption=True
+        call_args = fake_client.send_message_event.call_args
+        assert call_args[0][1] == "m.room.encrypted"  # event_type
+        assert call_args[1].get("disable_encryption") is True
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_room_encryption_failure_returns_error(self):
+        """send() should fail-closed if text encryption fails."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        fake_client.encrypt = AsyncMock(side_effect=Exception("no megolm session"))
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        fake_client.crypto = MagicMock()
+        adapter._client = fake_client
+
+        result = await adapter.send("!room:example.org", "hello")
+
+        assert result.success is False
+        assert "no megolm session" in result.error
+        # send_message_event should NOT be called
+        fake_client.send_message_event.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_unencrypted_room_sends_plain(self):
+        """send() should send plain m.room.message for unencrypted rooms."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$evt_plain")
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=False)
+        fake_client.crypto = MagicMock()
+        adapter._client = fake_client
+
+        result = await adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        call_args = fake_client.send_message_event.call_args
+        assert call_args[0][1] == "m.room.message"
+        assert call_args[1].get("disable_encryption") is False
+
+    @pytest.mark.asyncio
+    async def test_send_unknown_encryption_state_fails_closed(self):
+        """send() should fail closed when room encryption state is unknown."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$evt")
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(
+            side_effect=Exception("state lookup failed"),
+        )
+        fake_client.crypto = MagicMock()
+        adapter._client = fake_client
+
+        result = await adapter.send("!room:example.org", "secret")
+
+        assert result.success is False
+        assert "encryption state" in result.error.lower()
+        # send_message_event must NOT be called — no plaintext leak
+        fake_client.send_message_event.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_message_encrypted_room_encrypts(self):
+        """edit_message() should encrypt content for encrypted rooms."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        encrypted_content = {"algorithm": "m.megolm.v1", "ciphertext": "..."}
+        fake_client.encrypt = AsyncMock(return_value=encrypted_content)
+        fake_client.send_message_event = AsyncMock(return_value="$edit_evt")
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        fake_client.crypto = MagicMock()
+        adapter._client = fake_client
+
+        result = await adapter.edit_message(
+            "!room:example.org", "$original", "edited text"
+        )
+
+        assert result.success is True
+        fake_client.encrypt.assert_awaited_once()
+        call_args = fake_client.send_message_event.call_args
+        assert call_args[0][1] == "m.room.encrypted"
+        assert call_args[1].get("disable_encryption") is True
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_room_retries_with_re_encryption(self):
+        """send() retry path should re-encrypt after key share."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        encrypted_content = {"algorithm": "m.megolm.v1", "ciphertext": "..."}
+
+        fake_client = MagicMock()
+        fake_client.encrypt = AsyncMock(return_value=encrypted_content)
+        fake_client.send_message_event = AsyncMock(side_effect=[
+            Exception("encryption error"),
+            "$evt_after_retry",
+        ])
+        mock_crypto = MagicMock()
+        mock_crypto.share_keys = AsyncMock()
+        fake_client.crypto = mock_crypto
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        adapter._client = fake_client
+
+        result = await adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        assert result.message_id == "$evt_after_retry"
+        mock_crypto.share_keys.assert_awaited_once()
+        # encrypt should be called twice (initial + retry)
+        assert fake_client.encrypt.await_count == 2
 
 
 # ---------------------------------------------------------------------------
