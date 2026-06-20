@@ -1296,6 +1296,9 @@ def init_agent(
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
+    _codex_gpt55_autoraise_notice = str(
+        _compression_cfg.get("codex_gpt55_autoraise_notice", True)
+    ).lower() in {"true", "1", "yes"}
     agent._compression_threshold_autoraised = None
     try:
         from agent.auxiliary_client import (
@@ -1315,7 +1318,8 @@ def init_agent(
             # the user's global threshold already meets/exceeds the raised
             # value, since nothing actually changed for them.
             if (
-                _is_codex_gpt55_fn(agent.model, agent.provider)
+                _codex_gpt55_autoraise_notice
+                and _is_codex_gpt55_fn(agent.model, agent.provider)
                 and _model_cthresh > _prev_threshold + 1e-9
             ):
                 agent._compression_threshold_autoraised = {

@@ -20,6 +20,11 @@ from hermes_cli.auth import AuthError, _refresh_codex_auth_tokens, resolve_codex
 STALE = {"access_token": "stale-access", "refresh_token": "stale-refresh"}
 
 
+@pytest.fixture(autouse=True)
+def _isolated_codex_shared_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-auth"))
+
+
 def test_self_heals_on_stale_refresh_token(monkeypatch):
     """invalid_grant (relogin-required) → reimport from ~/.codex and persist it."""
     saved = {}

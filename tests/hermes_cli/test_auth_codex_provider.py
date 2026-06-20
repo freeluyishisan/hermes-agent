@@ -16,9 +16,13 @@ from hermes_cli.auth import (
     _save_codex_tokens,
     _import_codex_cli_tokens,
     _login_openai_codex,
+    _read_shared_codex_state,
+    _write_shared_codex_state,
+    _clear_shared_codex_state,
     refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
     resolve_provider,
+    write_credential_pool,
 )
 
 
@@ -48,6 +52,11 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     payload = {"exp": exp_epoch}
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
     return f"h.{encoded}.s"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_codex_shared_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-auth"))
 
 
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
@@ -157,7 +166,9 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
 
     resolved = resolve_codex_runtime_credentials()
     assert resolved["api_key"] == "pool-fallback-token"
-    assert resolved["source"] == "credential_pool"
+    # Pool-only credentials are now promoted into the Hermes auth store and
+    # shared Codex store before runtime use, preventing future drift.
+    assert resolved["source"] == "hermes-auth-store"
     assert resolved["base_url"]  # default codex backend URL
 
 
@@ -223,15 +234,231 @@ def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):
 
 def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
 
     _save_codex_tokens({"access_token": "at123", "refresh_token": "rt456"})
     data = _read_codex_tokens()
 
     assert data["tokens"]["access_token"] == "at123"
     assert data["tokens"]["refresh_token"] == "rt456"
+    shared = _read_shared_codex_state()
+    assert shared["tokens"]["access_token"] == "at123"
+    assert shared["tokens"]["refresh_token"] == "rt456"
+
+
+def test_resolve_codex_runtime_credentials_adopts_fresher_shared_store(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
+    _setup_hermes_auth(hermes_home, access_token="local-at", refresh_token="local-rt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state(
+        {"access_token": "shared-at", "refresh_token": "shared-rt"},
+        last_refresh="2026-02-27T00:00:00Z",
+    )
+
+    resolved = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "shared-at"
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    tokens = payload["providers"]["openai-codex"]["tokens"]
+    assert tokens["access_token"] == "shared-at"
+    assert tokens["refresh_token"] == "shared-rt"
+
+
+def test_resolve_codex_runtime_credentials_bootstraps_empty_profile_from_shared_store(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state(
+        {"access_token": "shared-at", "refresh_token": "shared-rt"},
+        last_refresh="2026-02-27T00:00:00Z",
+    )
+
+    resolved = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "shared-at"
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["openai-codex"]["tokens"]["refresh_token"] == "shared-rt"
+
+
+def test_resolve_codex_runtime_credentials_promotes_newer_global_pool_to_shared(tmp_path, monkeypatch):
+    """Profile runtime should self-heal when root pool is newer than shared store."""
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "lark-a330"
+    profile.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    shared_dir = tmp_path / "shared"
+    (root / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+                "last_refresh": "2026-06-16T15:13:08Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "root-new",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": "new-at",
+                    "refresh_token": "new-rt",
+                    "last_refresh": "2026-06-16T23:29:20Z",
+                    "label": "root@example.test",
+                }
+            ]
+        },
+    }))
+    (profile / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+                "last_refresh": "2026-06-16T15:13:08Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "profile-old",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                    "last_refresh": "2026-06-16T15:13:08Z",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                    "last_error_reason": "token_invalidated",
+                }
+            ]
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state(
+        {"access_token": "old-at", "refresh_token": "old-rt"},
+        last_refresh="2026-06-16T15:13:08Z",
+    )
+
+    resolved = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "new-at"
+    profile_auth = json.loads((profile / "auth.json").read_text())
+    profile_state = profile_auth["providers"]["openai-codex"]
+    assert profile_state["tokens"]["refresh_token"] == "new-rt"
+    profile_entry = profile_auth["credential_pool"]["openai-codex"][0]
+    assert profile_entry["access_token"] == "new-at"
+    assert profile_entry["refresh_token"] == "new-rt"
+    assert profile_entry["last_status"] is None
+    assert profile_entry["last_error_code"] is None
+    shared = _read_shared_codex_state()
+    assert shared is not None
+    assert shared["tokens"]["refresh_token"] == "new-rt"
+    assert shared["last_refresh"] == "2026-06-16T23:29:20Z"
+
+
+def test_write_credential_pool_openai_codex_writes_through_shared_store(tmp_path, monkeypatch):
+    """Pool-level re-auth must not leave providers/shared on an older token chain."""
+    hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
+    _setup_hermes_auth(hermes_home, access_token="old-at", refresh_token="old-rt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state(
+        {"access_token": "old-at", "refresh_token": "old-rt"},
+        last_refresh="2026-06-16T15:13:08Z",
+    )
+
+    write_credential_pool("openai-codex", [
+        {
+            "id": "pool-new",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "access_token": "new-at",
+            "refresh_token": "new-rt",
+            "last_refresh": "2026-06-16T23:29:20Z",
+            "label": "root@example.test",
+        }
+    ])
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    assert auth["providers"]["openai-codex"]["tokens"]["access_token"] == "new-at"
+    assert auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "new-rt"
+    shared = _read_shared_codex_state()
+    assert shared is not None
+    assert shared["tokens"]["access_token"] == "new-at"
+    assert shared["tokens"]["refresh_token"] == "new-rt"
+
+
+def test_resolve_codex_runtime_credentials_refresh_writes_shared_store(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
+    expiring_token = _jwt_with_exp(int(time.time()) - 10)
+    _setup_hermes_auth(hermes_home, access_token=expiring_token, refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+
+    def _fake_refresh(access_token, refresh_token, *, timeout_seconds=20.0):
+        assert refresh_token == "refresh-old"
+        return {"access_token": "access-new", "refresh_token": "refresh-new"}
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _fake_refresh)
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "access-new"
+    shared = _read_shared_codex_state()
+    assert shared["tokens"]["refresh_token"] == "refresh-new"
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["openai-codex"]["tokens"]["refresh_token"] == "refresh-new"
+
+
+def test_codex_refresh_429_does_not_clear_shared_store(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
+    _setup_hermes_auth(hermes_home, access_token="access", refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state({"access_token": "access", "refresh_token": "refresh-old"})
+
+    def _rate_limited(*args, **kwargs):
+        raise AuthError(
+            "rate limited",
+            provider="openai-codex",
+            code="codex_rate_limited",
+            relogin_required=False,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _rate_limited)
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials(force_refresh=True, refresh_if_expiring=False)
+
+    assert exc.value.code == "codex_rate_limited"
+    assert _read_shared_codex_state()["tokens"]["refresh_token"] == "refresh-old"
+
+
+def test_clear_shared_codex_state_is_compare_and_clear(tmp_path, monkeypatch):
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state({"access_token": "new-at", "refresh_token": "new-rt"})
+
+    _clear_shared_codex_state("stale_failure", expected_refresh_token="old-rt")
+    assert _read_shared_codex_state()["tokens"]["refresh_token"] == "new-rt"
+
+    _clear_shared_codex_state("matching_failure", expected_refresh_token="new-rt")
+    assert _read_shared_codex_state() is None
 
 
 def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
