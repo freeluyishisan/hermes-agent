@@ -61,6 +61,7 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
+from agent.i18n import t
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -3182,9 +3183,9 @@ def run_conversation(
                     # abort silently (#35314, #17446).
                     if agent._has_pending_fallback():
                         if classified.reason == FailoverReason.content_policy_blocked:
-                            agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
+                            agent._buffer_status(t("gateway.api_safety_trying_fallback"))
                         else:
-                            agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                            agent._buffer_status(t("gateway.api_non_retryable_trying_fallback", status_code=status_code))
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -3206,13 +3207,11 @@ def run_conversation(
                     _nonretryable_summary = agent._summarize_api_error(api_error)
                     if classified.reason == FailoverReason.content_policy_blocked:
                         agent._emit_status(
-                            f"❌ Provider safety filter blocked this request: "
-                            f"{_nonretryable_summary}"
+                            t("gateway.api_safety_blocked", summary=_nonretryable_summary)
                         )
                     else:
                         agent._emit_status(
-                            f"❌ Non-retryable error (HTTP {status_code}): "
-                            f"{_nonretryable_summary}"
+                            t("gateway.api_non_retryable", status_code=status_code, summary=_nonretryable_summary)
                         )
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
@@ -3331,7 +3330,7 @@ def run_conversation(
                         continue
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
-                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                        agent._buffer_status(t("gateway.api_max_retries_trying_fallback", max_retries=max_retries))
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -3342,7 +3341,7 @@ def run_conversation(
                     _final_summary = agent._summarize_api_error(api_error)
                     _billing_guidance = ""
                     if classified.reason == FailoverReason.billing:
-                        agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
+                        agent._emit_status(t("gateway.api_error_billing", summary=_final_summary))
                         _billing_guidance = _billing_or_entitlement_message(
                             capability="model access",
                             provider=_provider,
@@ -3357,9 +3356,9 @@ def run_conversation(
                             model=_model,
                         )
                     elif is_rate_limited:
-                        agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                        agent._emit_status(t("gateway.api_error_rate_limited", max_retries=max_retries, summary=_final_summary))
                     else:
-                        agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+                        agent._emit_status(t("gateway.api_error_failed", max_retries=max_retries, summary=_final_summary))
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                     # Detect SSE stream-drop pattern (e.g. "Network
@@ -3976,7 +3975,7 @@ def run_conversation(
                     _turn_exit_reason = "guardrail_halt"
                     final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(
-                        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
+                        t("gateway.tool_guardrail_halted", tool=decision.tool_name, code=decision.code)
                     )
                     messages.append({"role": "assistant", "content": final_response})
                     # Emit the halt message to the client so it's not
@@ -4221,8 +4220,7 @@ def run_conversation(
                             agent._thinking_prefill_retries,
                         )
                         agent._buffer_status(
-                            f"↻ Thinking-only response — prefilling to continue "
-                            f"({agent._thinking_prefill_retries}/2)"
+                            t("gateway.thinking_prefill_retry", n=agent._thinking_prefill_retries)
                         )
                         interim_msg = agent._build_assistant_message(
                             assistant_message, "incomplete"
@@ -4256,8 +4254,7 @@ def run_conversation(
                             agent._empty_content_retries, agent.model,
                         )
                         agent._buffer_status(
-                            f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
+                            t("gateway.empty_response_retry", n=agent._empty_content_retries)
                         )
                         continue
 
@@ -4275,8 +4272,7 @@ def run_conversation(
                             agent.provider,
                         )
                         agent._buffer_status(
-                            "⚠️ Model returning empty responses — "
-                            "switching to fallback provider..."
+                            t("gateway.empty_response_switching_fallback")
                         )
                         if agent._try_activate_fallback():
                             agent._empty_content_retries = 0
@@ -4318,8 +4314,7 @@ def run_conversation(
                             "Reasoning: %s", reasoning_preview,
                         )
                         agent._emit_status(
-                            "⚠️ Model produced reasoning but no visible "
-                            "response after all retries. Returning empty."
+                            t("gateway.empty_response_reasoning_only")
                         )
                     else:
                         logger.warning(
@@ -4330,9 +4325,9 @@ def run_conversation(
                             agent.provider,
                         )
                         agent._emit_status(
-                            "❌ Model returned no content after all retries"
-                            + (" and fallback attempts." if agent._fallback_chain else
-                               ". No fallback providers configured.")
+                            t("gateway.empty_response_no_content")
+                            if agent._fallback_chain
+                            else t("gateway.empty_response_no_content_no_fallback")
                         )
 
                     final_response = "(empty)"
