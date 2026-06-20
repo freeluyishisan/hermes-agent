@@ -7,6 +7,7 @@ import pytest
 
 from agent import i18n
 from gateway import run as gw
+from gateway import slash_commands as sc
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +53,7 @@ def test_empty_response_localized():
 
 
 _RUN_PY = Path(gw.__file__).read_text(encoding="utf-8")
+_SLASH_COMMANDS_PY = Path(sc.__file__).read_text(encoding="utf-8")
 
 # Exact English literals that must no longer appear unwrapped in gateway/run.py
 # (they now live only in locales/*.yaml). Tasks 8-10 will append their literals.
@@ -161,5 +163,94 @@ def test_english_literal_not_unwrapped(literal):
 ])
 def test_batchB_key_resolves_in_russian(key, kwargs):
     """Each Batch B key must resolve (not raise KeyError) in Russian."""
+    result = i18n.t(key, lang="ru", **kwargs)
+    assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
+
+
+# ---- Batch C: /whoami, /platform, codex-runtime, /subgoal, /memory, /skills ----
+
+@pytest.mark.parametrize("literal", [
+    # /whoami
+    '"**You** — {platform} ({scope})',       # whoami_unrestricted / whoami_admin / whoami_user
+    '"Tier: unrestricted',                    # whoami_unrestricted
+    '"Tier: user',                            # whoami_user
+    '"Slash commands: all available"',        # whoami_unrestricted / whoami_admin
+    # /platform
+    '"**Gateway platforms**"',                # platform_list_header
+    '"Connected: " +',                        # platform_connected
+    '"Connected: (none)"',                    # platform_connected_none
+    '"Failed/paused: (none)"',                # platform_failed_none
+    'f"Usage: /platform {action} <name>"',   # platform_usage
+    'f"Unknown platform: {target}"',         # platform_unknown
+    '"Usage: /platform <list|pause|resume>', # platform_usage_full
+    # codex-runtime
+    '"❌ " + "\\n❌ "',                        # codex_runtime_errors (old form)
+    'f"❌ Could not load config: {exc}"',     # codex_runtime_config_error
+    # /subgoal
+    '"No active goal. Set one with /goal <text>."',   # subgoal_no_active_goal
+    '"Usage: /subgoal remove <n>"',                   # subgoal_remove_usage
+    '"/subgoal remove: <n> must be an integer',       # subgoal_remove_not_integer
+    'f"✓ Removed subgoal {idx}: {removed}"',          # subgoal_removed
+    'f"✓ Cleared {prev} subgoal',                     # subgoal_cleared_one/many
+    '"No subgoals to clear."',                         # subgoal_none_to_clear
+    'f"✓ Added subgoal {idx}: {text}"',                # subgoal_added
+    # /memory & /skills
+    '"Unknown /memory subcommand.',                    # memory_unknown_subcommand
+    '"Skill write approval is off',                    # skills_write_approval_off
+    '"Unknown /skills subcommand on this platform.',   # skills_unknown_subcommand
+    '"\\n… (truncated — full diff in "',               # skills_diff_truncated
+])
+def test_batchC_literal_not_unwrapped_in_slash_commands(literal):
+    assert literal not in _SLASH_COMMANDS_PY, (
+        f"unwrapped English literal still present in slash_commands.py: {literal!r}"
+    )
+
+
+@pytest.mark.parametrize("key,kwargs", [
+    # /whoami
+    ("gateway.whoami_unrestricted", {"platform": "telegram", "scope": "DM", "user_id": "123"}),
+    ("gateway.whoami_admin", {"platform": "telegram", "scope": "DM", "user_id": "123"}),
+    ("gateway.whoami_user", {"platform": "telegram", "scope": "DM", "user_id": "123", "runnable_str": "/help, /whoami"}),
+    # /platform
+    ("gateway.platform_list_header", {}),
+    ("gateway.platform_connected", {"platforms": "telegram, discord"}),
+    ("gateway.platform_connected_none", {}),
+    ("gateway.platform_failed_paused", {"platform": "discord", "reason": "paused"}),
+    ("gateway.platform_retrying", {"platform": "discord", "attempts": 3}),
+    ("gateway.platform_failed_none", {}),
+    ("gateway.platform_usage", {"action": "pause"}),
+    ("gateway.platform_unknown", {"target": "xyz"}),
+    ("gateway.platform_not_in_queue", {"platform": "discord"}),
+    ("gateway.platform_already_paused", {"platform": "discord"}),
+    ("gateway.platform_paused_ok", {"platform": "discord"}),
+    ("gateway.platform_not_in_queue_resume", {"platform": "discord"}),
+    ("gateway.platform_already_retrying", {"platform": "discord"}),
+    ("gateway.platform_resumed_ok", {"platform": "discord"}),
+    ("gateway.platform_usage_full", {}),
+    # codex-runtime & model
+    ("gateway.model_expensive_warning", {"warning_message": "This model costs $$$", "prefix": "!"}),
+    ("gateway.codex_runtime_errors", {"errors": "bad arg"}),
+    ("gateway.codex_runtime_config_error", {"exc": "FileNotFoundError"}),
+    ("gateway.codex_runtime_result", {"prefix": "✓", "message": "switched to auto"}),
+    # /subgoal
+    ("gateway.subgoal_no_active_goal", {}),
+    ("gateway.subgoal_remove_usage", {}),
+    ("gateway.subgoal_remove_not_integer", {}),
+    ("gateway.subgoal_remove_error", {"exc": "index out of range"}),
+    ("gateway.subgoal_removed", {"idx": 1, "removed": "Write tests"}),
+    ("gateway.subgoal_clear_error", {"exc": "locked"}),
+    ("gateway.subgoal_cleared_one", {"count": 1}),
+    ("gateway.subgoal_cleared_many", {"count": 3}),
+    ("gateway.subgoal_none_to_clear", {}),
+    ("gateway.subgoal_add_error", {"exc": "goal locked"}),
+    ("gateway.subgoal_added", {"idx": 2, "text": "Write tests"}),
+    # /memory & /skills
+    ("gateway.memory_unknown_subcommand", {}),
+    ("gateway.skills_write_approval_off", {}),
+    ("gateway.skills_unknown_subcommand", {}),
+    ("gateway.skills_diff_truncated", {"pending_id": "abc123"}),
+])
+def test_batchC_key_resolves_in_russian(key, kwargs):
+    """Each Batch C key must resolve (not raise KeyError) in Russian."""
     result = i18n.t(key, lang="ru", **kwargs)
     assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
