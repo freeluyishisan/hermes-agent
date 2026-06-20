@@ -291,6 +291,8 @@ from hermes_cli.subcommands.dashboard import build_dashboard_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.context import build_context_parser
+from hermes_cli.subcommands.smoke import build_smoke_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
@@ -11488,6 +11490,20 @@ def cmd_prompt_size(args):
     _impl(args)
 
 
+def cmd_context(args):
+    """Inspect context/prompt budget surfaces."""
+    from hermes_cli.context_audit import cmd_context as _impl
+
+    _impl(args)
+
+
+def cmd_smoke(args):
+    """Run read-only Hermes runtime smoke checks."""
+    from hermes_cli.smoke import cmd_smoke as _impl
+
+    _impl(args)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -11538,12 +11554,12 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "context", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
-        "send", "sessions", "setup",
+        "send", "sessions", "setup", "smoke",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
@@ -13090,6 +13106,16 @@ def main():
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # =========================================================================
+    # context command  (parser built in hermes_cli/subcommands/context.py)
+    # =========================================================================
+    build_context_parser(subparsers, cmd_context=cmd_context)
+
+    # =========================================================================
+    # smoke command  (parser built in hermes_cli/subcommands/smoke.py)
+    # =========================================================================
+    build_smoke_parser(subparsers, cmd_smoke=cmd_smoke)
 
     # =========================================================================
     # Parse and execute
