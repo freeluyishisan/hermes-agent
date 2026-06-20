@@ -656,10 +656,10 @@ agent:
 #   # Unknown {placeholders} are left literal (they never crash the gateway).
 #   # {name} auto-fills from ui.theme.branding.agent_name (fallback "Hermes").
 #   system_messages:
-#     restart_success:   "♻ {name} перезапущен. Сессия продолжается."
-#     gateway_online:    "♻️ Gateway снова онлайн — {name} готов к работе."
-#     interrupting_task: "⚡ Прерываю текущую задачу. Скоро отвечу."
-#     long_running:      "⏳ Работаю над задачей уже {minutes} мин."
+#     restart_success:   "♻ {name} is back up. Your session continues."
+#     gateway_online:    "♻️ {name} is back online and ready."
+#     interrupting_task: "⚡ Interrupting the current task — I'll reply shortly."
+#     long_running:      "⏳ Still working — {minutes} min so far."
 
 # =============================================================================
 # Toolsets
