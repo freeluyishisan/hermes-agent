@@ -555,7 +555,7 @@ class SessionEntry:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionEntry":
         origin = None
-        if "origin" in data and data["origin"]:
+        if "origin" in data and isinstance(data["origin"], dict):
             origin = SessionSource.from_dict(data["origin"])
         
         platform = None
@@ -778,9 +778,12 @@ class SessionStore:
                     data = json.load(f)
                     for key, entry_data in data.items():
                         try:
+                            if not isinstance(entry_data, dict):
+                                continue
                             self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
+                        except (ValueError, KeyError, TypeError):
                             # Skip entries with unknown/removed platform values
+                            # or malformed data (e.g. bool where dict expected)
                             continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
