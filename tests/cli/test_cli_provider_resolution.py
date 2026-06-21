@@ -152,7 +152,7 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
             "provider": "openrouter",
             "api_mode": "chat_completions",
             "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "test-key",
+            "api_key": "***",
             "source": "env/config",
         }
 
@@ -180,7 +180,7 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://same-endpoint.example/v1",
-            "api_key": "same-key",
+            "api_key": "***",
             "source": "env/config",
         }
 
@@ -249,7 +249,7 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "test-key",
+            "api_key": "***",
             "source": "env/config",
         }
 
@@ -283,13 +283,13 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
 
     monkeypatch.setattr(
         "hermes_cli.auth.get_provider_auth_state",
-        lambda provider: {"access_token": "nous-token"},
+        lambda provider: {"access_token": "***"},
     )
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_nous_runtime_credentials",
         lambda *args, **kwargs: {
             "base_url": "https://inference.example.com/v1",
-            "api_key": "nous-key",
+            "api_key": "***",
         },
     )
     monkeypatch.setattr(
@@ -545,7 +545,7 @@ def test_codex_provider_uses_config_model(monkeypatch):
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "fake-codex-token",
+            "api_key": "***",
             "source": "env/config",
         }
 
@@ -588,7 +588,7 @@ def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "fake-key",
+            "api_key": "***",
             "source": "env/config",
         }
 
@@ -623,7 +623,7 @@ def test_codex_provider_preserves_explicit_codex_model(monkeypatch):
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "test-key",
+            "api_key": "***",
             "source": "env/config",
         }
 
@@ -650,7 +650,7 @@ def test_codex_provider_strips_provider_prefix_from_model(monkeypatch):
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "test-key",
+            "api_key": "***",
             "source": "env/config",
         }
 
@@ -801,6 +801,7 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
     monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "nous")
     monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider_id: None)
     monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices, **kwargs: 0)
+    monkeypatch.setattr("builtins.input", lambda *args: "")
 
     captured = {}
 

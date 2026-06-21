@@ -3059,7 +3059,26 @@ def select_provider_and_model(args=None):
         _aux_config_menu()
         return
 
-    # Step 2: Provider-specific setup + model selection
+    # Get display label for the selected provider
+    _selected_label = ""
+    for _key, _label, _members in ordered:
+        if _key == selected_provider:
+            _selected_label = _label.replace("  ← currently active", "").strip()
+            break
+
+    # Ask if user wants to make this the default provider
+    # This prevents accidentally overwriting model.base_url when just adding/configuring a provider
+    if selected_provider not in {"custom", "remove-custom", "aux-config", "cancel"} and not selected_provider.startswith("custom:"):
+        try:
+            _make_default = input(f"Make '{_selected_label}' your default provider? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            _make_default = "n"
+        if _make_default in {"n", "no"}:
+            # Configure provider only (credentials, base_url) without switching default
+            _configure_provider_only(config, selected_provider, _selected_label)
+            return
+
+    # Step 2: Provider-specific setup + model selection (make_default=True)
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
@@ -3609,6 +3628,396 @@ _DEFAULT_QWEN_PORTAL_MODELS = [
 
 
 
+def _configure_provider_only(config, provider_id: str, provider_label: str):
+    """Configure a provider (credentials, base_url) WITHOUT making it the default.
+
+    This allows users to add/set up providers via `hermes model` without
+    overwriting their current model.provider and model.base_url.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        get_provider_auth_state,
+        _login_minimax_oauth,
+        _login_xai_oauth,
+        resolve_xai_oauth_runtime_credentials,
+        resolve_minimax_oauth_runtime_credentials,
+        resolve_qwen_runtime_credentials,
+        resolve_gemini_oauth_runtime_credentials,
+        DEFAULT_XAI_OAUTH_BASE_URL,
+        DEFAULT_QWEN_BASE_URL,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.secret_prompt import masked_secret_prompt
+    import argparse
+
+    print(f"\nConfiguring {provider_label} (without switching default)...\n")
+
+    # Handle OAuth providers
+    if provider_id == "xai-oauth":
+        from hermes_cli.auth import get_xai_oauth_auth_status, PROVIDER_REGISTRY
+        status = get_xai_oauth_auth_status()
+        if not status.get("logged_in"):
+            print("Not logged into xAI Grok OAuth. Starting login...")
+            try:
+                _login_xai_oauth(argparse.Namespace(manual_paste=False, no_browser=False, timeout=None), PROVIDER_REGISTRY["xai-oauth"])
+            except SystemExit:
+                print("Login cancelled.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+        else:
+            print("Already logged into xAI Grok OAuth.")
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "qwen-oauth":
+        from hermes_cli.auth import get_qwen_auth_status
+        status = get_qwen_auth_status()
+        if not status.get("logged_in"):
+            print("Not logged into Qwen CLI OAuth.")
+            print("Run: qwen auth qwen-oauth")
+            return
+        print("Already logged into Qwen CLI OAuth.")
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "minimax-oauth":
+        from hermes_cli.auth import get_provider_auth_state, PROVIDER_REGISTRY
+        state = get_provider_auth_state("minimax-oauth")
+        if not state or not state.get("access_token"):
+            print("Not logged into MiniMax. Starting OAuth login...")
+            try:
+                _login_minimax_oauth(argparse.Namespace(region="global", no_browser=False, timeout=15.0), PROVIDER_REGISTRY["minimax-oauth"])
+            except SystemExit:
+                print("Login cancelled.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+        else:
+            print("Already logged into MiniMax.")
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "google-gemini-cli":
+        from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
+            project_id = creds.get("project_id", "")
+            if project_id:
+                print(f"  Using GCP project: {project_id}")
+            else:
+                print("  No GCP project configured — free tier will be auto-provisioned on first request.")
+        except Exception as exc:
+            print(f"Failed to resolve Gemini credentials: {exc}")
+            return
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "copilot-acp":
+        print(f"{provider_label} requires no additional configuration.")
+        print(f"Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "copilot":
+        print(f"{provider_label} requires GitHub Copilot authentication.")
+        print("Run: gh auth login")
+        print(f"Use 'hermes model' to switch to it as default.")
+        return
+
+    # Handle API key providers (OpenAI, Anthropic, DeepSeek, etc.)
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if pconfig and pconfig.api_key_env_vars:
+        key_env = pconfig.api_key_env_vars[0]
+        base_url_env = pconfig.base_url_env_var or ""
+        current_key = get_env_value(key_env) or ""
+        current_base = ""
+        if base_url_env:
+            current_base = get_env_value(base_url_env) or ""
+
+        print(f"API key environment variable: {key_env}")
+        if current_key:
+            print(f"  Current key: {current_key[:8]}...")
+        if current_base:
+            print(f"  Current base URL: {current_base}")
+
+        try:
+            api_key = masked_secret_prompt(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+
+        if api_key:
+            save_env_value(key_env, api_key)
+            print(f"API key saved to {key_env}.")
+        elif not current_key:
+            print("No API key provided.")
+
+        if base_url_env:
+            try:
+                override = input(f"Base URL [{current_base or pconfig.inference_base_url}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                override = ""
+            if override:
+                if not override.startswith(("http://", "https://")):
+                    print("Invalid URL — must start with http:// or https://. Keeping current value.")
+                else:
+                    save_env_value(base_url_env, override)
+                    print(f"Base URL saved to {base_url_env}.")
+
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    # Handle special providers
+    if provider_id == "openrouter":
+        print("OpenRouter configuration uses the Nous Portal flow.")
+        print("Run 'hermes model' and select OpenRouter to configure fully.")
+        return
+
+    if provider_id == "nous":
+        print("Nous Portal configuration requires the full setup flow.")
+        print("Run 'hermes model' and select Nous to configure fully.")
+        return
+
+    if provider_id == "openai-codex":
+        print("OpenAI Codex configuration requires the full setup flow.")
+        print("Run 'hermes model' and select OpenAI Codex to configure fully.")
+        return
+
+    if provider_id == "bedrock":
+        print("AWS Bedrock configuration requires AWS credentials.")
+        print("Run 'hermes auth add bedrock' to configure.")
+        return
+
+    if provider_id == "azure-foundry":
+        print("Azure Foundry configuration requires the full setup flow.")
+        print("Run 'hermes model' and select Azure Foundry to configure fully.")
+        return
+
+    # Fallback for unknown providers
+    print(f"Configuration for {provider_label} not implemented in 'configure only' mode.")
+    print("Run 'hermes model' and select this provider to configure fully.")
+
+
+def _model_flow_custom(config):
+    """Custom endpoint: collect URL, API key, and model name.
+
+    Automatically saves the endpoint to ``custom_providers`` in config.yaml
+    so it appears in the provider menu on subsequent runs.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.secret_prompt import masked_secret_prompt
+
+    current_url = get_env_value("OPENAI_BASE_URL") or ""
+    current_key = get_env_value("OPENAI_API_KEY") or ""
+
+    print("Custom OpenAI-compatible endpoint configuration:")
+    if current_url:
+        print(f"  Current URL: {current_url}")
+    if current_key:
+        print(f"  Current key: {current_key[:8]}...")
+    print()
+
+    try:
+        base_url = input(
+            f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
+        ).strip()
+        api_key = masked_secret_prompt(
+            f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not base_url and not current_url:
+        print("No URL provided. Cancelled.")
+        return
+
+    # Validate URL format
+    effective_url = base_url or current_url
+    if not effective_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+        return
+
+    effective_key = api_key or current_key
+
+    # Hint: most local model servers (Ollama, vLLM, llama.cpp) require /v1
+    # in the base URL for OpenAI-compatible chat completions.  Prompt the
+    # user if the URL looks like a local server without /v1.
+    _url_lower = effective_url.rstrip("/").lower()
+    _looks_local = any(
+        h in _url_lower
+        for h in ("localhost", "127.0.0.1", "0.0.0.0", ":11434", ":8080", ":5000")
+    )
+    if _looks_local and not _url_lower.endswith("/v1"):
+        print()
+        print(f"  Hint: Did you mean to add /v1 at the end?")
+        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print(f"  e.g. {effective_url.rstrip('/')}/v1")
+        try:
+            _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            _add_v1 = "n"
+        if _add_v1 in {"", "y", "yes"}:
+            effective_url = effective_url.rstrip("/") + "/v1"
+            if base_url:
+                base_url = effective_url
+            print(f"  Updated URL: {effective_url}")
+        print()
+
+    from hermes_cli.models import probe_api_models
+
+    probe = probe_api_models(effective_key, effective_url)
+    if probe.get("used_fallback") and probe.get("resolved_base_url"):
+        print(
+            f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
+            f"not the exact URL you entered. Saving the working base URL instead."
+        )
+        effective_url = probe["resolved_base_url"]
+        if base_url:
+            base_url = effective_url
+    elif probe.get("models") is not None:
+        print(
+            f"Verified endpoint via {probe.get('probed_url')} "
+            f"({len(probe.get('models') or [])} model(s) visible)"
+        )
+    else:
+        print(
+            f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
+            f"Hermes will still save it."
+        )
+        if probe.get("suggested_base_url"):
+            suggested = probe["suggested_base_url"]
+            if suggested.endswith("/v1"):
+                print(
+                    f"  If this server expects /v1 in the path, try base URL: {suggested}"
+                )
+            else:
+                print(f"  If /v1 should not be in the base URL, try: {suggested}")
+
+    # Prompt for API compatibility mode explicitly so codex-compatible custom
+    # providers don't silently fall back to chat_completions.
+    current_model_cfg = config.get("model")
+    current_api_mode = ""
+    if isinstance(current_model_cfg, dict):
+        current_api_mode = str(current_model_cfg.get("api_mode") or "").strip()
+    api_mode = _prompt_custom_api_mode_selection(
+        effective_url,
+        current_api_mode=current_api_mode,
+    )
+    if api_mode:
+        print(f"  API mode: {api_mode}")
+    else:
+        print("  API mode: auto-detect")
+
+    # Select model — use probe results when available, fall back to manual input
+    model_name = ""
+    detected_models = probe.get("models") or []
+    try:
+        if len(detected_models) == 1:
+            print(f"  Detected model: {detected_models[0]}")
+            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+            if confirm in {"", "y", "yes"}:
+                model_name = detected_models[0]
+            else:
+                model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        elif len(detected_models) > 1:
+            print("  Available models:")
+            for i, m in enumerate(detected_models, 1):
+                print(f"    {i}. {m}")
+            pick = input(
+                f"  Select model [1-{len(detected_models)}] or type name: "
+            ).strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                model_name = detected_models[int(pick) - 1]
+            elif pick:
+                model_name = pick
+        else:
+            model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+
+        context_length_str = input(
+            "Context length in tokens [leave blank for auto-detect]: "
+        ).strip()
+
+        # Prompt for a display name — shown in the provider menu on future runs
+        default_name = _auto_provider_name(effective_url)
+        display_name = input(f"Display name [{default_name}]: ").strip() or default_name
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    context_length = None
+    if context_length_str:
+        try:
+            context_length = int(
+                context_length_str.replace(",", "")
+                .replace("k", "000")
+                .replace("K", "000")
+            )
+            if context_length <= 0:
+                context_length = None
+        except ValueError:
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            context_length = None
+
+    if model_name:
+        _save_model_choice(model_name)
+
+        # Update config and deactivate any OAuth provider
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "custom"
+        model["base_url"] = effective_url
+        if effective_key:
+            model["api_key"] = effective_key
+        if api_mode:
+            model["api_mode"] = api_mode
+        else:
+            model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+
+        # Sync the caller's config dict so the setup wizard's final
+        # save_config(config) preserves our model settings.  Without
+        # this, the wizard overwrites model.provider/base_url with
+        # the stale values from its own config dict (#4172).
+        config["model"] = dict(model)
+
+        print(f"Default model set to: {model_name} (via {effective_url})")
+    else:
+        if base_url or api_key:
+            deactivate_provider()
+        # Even without a model name, persist the custom endpoint on the
+        # caller's config dict so the setup wizard doesn't lose it.
+        _caller_model = config.get("model")
+        if not isinstance(_caller_model, dict):
+            _caller_model = {"default": _caller_model} if _caller_model else {}
+        _caller_model["provider"] = "custom"
+        _caller_model["base_url"] = effective_url
+        if effective_key:
+            _caller_model["api_key"] = effective_key
+        if api_mode:
+            _caller_model["api_mode"] = api_mode
+        else:
+            _caller_model.pop("api_mode", None)
+        config["model"] = _caller_model
+        print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+    # Auto-save to custom_providers so it appears in the menu next time
+    _save_custom_provider(
+        effective_url,
+        effective_key,
+        model_name or "",
+        context_length=context_length,
+        name=display_name,
+        api_mode=api_mode,
+    )
 
 
 def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
