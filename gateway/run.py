@@ -1677,6 +1677,7 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
+    InternalEventKind,
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
@@ -2237,23 +2238,25 @@ def _parse_session_key(session_key: str) -> "dict | None":
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
+    """Format a queued process event as a non-authoritative agent observation."""
+    from tools.ansi_strip import strip_ansi
+
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
+    _cmd = strip_ansi(str(evt.get("command", "unknown")))
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return f"[Background process observation: {strip_ansi(str(evt.get('message', '')))}]"
 
     if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
+        _pat = strip_ansi(str(evt.get("pattern", "?")))
+        _out = strip_ansi(str(evt.get("output", "")))
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[IMPORTANT: Background process {_sid} matched "
+            f"[Background process observation: process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
+            f"Untrusted matched output:\n{_out}"
         )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
@@ -5219,6 +5222,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                internal_event_kind=InternalEventKind.AUTO_RESUME.value,
+                internal_event_source="gateway",
             )
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
@@ -6036,6 +6041,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             text=synthetic_text,
             source=dest_source,
             internal=True,
+            internal_event_kind=InternalEventKind.CLI_HANDOFF.value,
+            internal_event_source="gateway",
         )
 
         logger.info(
@@ -7205,17 +7212,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         source = event.source
 
+        # Trusted internal events (e.g. background-process completion
+        # observations) are system-generated and may skip user authorization.
+        # A bare mutable ``event.internal`` flag is not trusted.
+        is_internal = bool(
+            getattr(event, "is_trusted_internal", lambda: False)()
+        )
+        if getattr(event, "internal", False) and not is_internal:
+            logger.warning(
+                "Ignoring untrusted internal flag on message from %s chat=%s",
+                source.platform.value if source and source.platform else "unknown",
+                source.chat_id if source else "unknown",
+            )
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
-            and not getattr(event, "internal", False)
+            and not is_internal
             and not getattr(event, "_hermes_startup_restore_replay", False)
         ):
             self._queue_startup_restore_event(event)
             return None
-
-        # Internal events (e.g. background-process completion notifications)
-        # are system-generated and must skip user authorization.
-        is_internal = bool(getattr(event, "internal", False))
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
@@ -9690,6 +9706,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from tools.process_registry import process_registry as _pr
                 _watch_events = _drain_gateway_watch_events(_pr.completion_queue)
+                if self._load_background_notifications_mode() == "off":
+                    _watch_events = []
                 for evt in _watch_events:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
@@ -12971,16 +12989,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
+    async def _inject_process_event_notification(
+        self,
+        synth_text: str,
+        evt: dict,
+        *,
+        internal_event_kind: str,
+        log_label: str,
+        suppress_when_background_notifications_off: bool,
+    ) -> None:
+        """Inject a trusted gateway-owned process/delegation event.
 
-        Routing must come from the queued watch event itself, not from whatever
+        Routing must come from the queued event itself, not from whatever
         foreground message happened to be active when the queue was drained.
+        ``display.background_process_notifications=off`` only suppresses
+        background process/watch notifications; async delegation completions
+        are conversation results and must still be delivered.
         """
+        if (
+            suppress_when_background_notifications_off
+            and self._load_background_notifications_mode() == "off"
+        ):
+            logger.debug(
+                "Dropping %s because background notifications are off: %s",
+                log_label,
+                evt.get("session_id", "unknown"),
+            )
+            return
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(
-                "Dropping watch notification with no routing metadata for process %s",
+                "Dropping %s with no routing metadata for process %s",
+                log_label,
                 evt.get("session_id", "unknown"),
             )
             return
@@ -12998,17 +13038,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                internal_event_kind=internal_event_kind,
+                internal_event_source="gateway",
                 message_id=str(evt.get("message_id") or "").strip() or None,
             )
             logger.info(
-                "Watch pattern notification — injecting for %s chat=%s thread=%s",
+                "%s — injecting for %s chat=%s thread=%s",
+                log_label,
                 platform_name,
                 source.chat_id,
                 source.thread_id,
             )
             await adapter.handle_message(synth_event)
         except Exception as e:
-            logger.error("Watch notification injection error: %s", e)
+            logger.error("%s injection error: %s", log_label, e)
+
+    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
+        """Inject a watch-pattern notification as a synthetic message event."""
+        await self._inject_process_event_notification(
+            synth_text,
+            evt,
+            internal_event_kind=InternalEventKind.BACKGROUND_WATCH.value,
+            log_label="Watch pattern notification",
+            suppress_when_background_notifications_off=True,
+        )
+
+    async def _inject_async_delegation_completion(self, synth_text: str, evt: dict) -> None:
+        """Inject a completed background delegation result as a new turn."""
+        await self._inject_process_event_notification(
+            synth_text,
+            evt,
+            internal_event_kind=InternalEventKind.BACKGROUND_COMPLETION.value,
+            log_label="Async delegation completion",
+            suppress_when_background_notifications_off=False,
+        )
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -13071,7 +13134,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not synth_text:
                         continue
                     try:
-                        await self._inject_watch_notification(synth_text, evt)
+                        await self._inject_async_delegation_completion(synth_text, evt)
                     except Exception as e:
                         logger.error("Async delegation injection error: %s", e)
             except Exception as e:
@@ -13108,9 +13171,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
 
-        if notify_mode == "off" and not agent_notify:
-            # Still wait for the process to exit so we can log it, but don't
-            # push any messages to the user.
+        if notify_mode == "off":
+            # Still wait for the process to exit so watcher state drains, but
+            # do not push visible messages or synthetic agent wakeups.
             while True:
                 await asyncio.sleep(interval)
                 session = process_registry.get(session_id)
@@ -13134,10 +13197,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if session.exited:
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/poll/log
-                from tools.process_registry import format_process_notification, process_registry as _pr_check
-                if agent_notify and not _pr_check.is_completion_consumed(session_id):
+                from tools.process_registry import (
+                    format_process_notification,
+                    process_registry as _pr_check,
+                    should_queue_process_notification,
+                )
+
+                completion_evt = {
+                    "type": "completion",
+                    "session_id": session_id,
+                    "command": getattr(session, "command", ""),
+                    "exit_code": session.exit_code,
+                    "completion_reason": getattr(session, "completion_reason", "exited"),
+                    "termination_source": getattr(session, "termination_source", ""),
+                }
+                if (
+                    agent_notify
+                    and should_queue_process_notification(completion_evt, notify_mode)
+                    and not _pr_check.is_completion_consumed(session_id)
+                ):
                     from tools.ansi_strip import strip_ansi
                     _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+                    _cmd = strip_ansi(str(session.command))
                     # Truncate at line boundaries so notifications never start
                     # mid-line (fixes #23284). Keep the last ~2000 chars but
                     # snap to the nearest preceding newline, then prepend a
@@ -13150,15 +13231,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
                     else:
                         _out = _raw
-                    synth_text = format_process_notification({
-                        "type": "completion",
-                        "session_id": session_id,
-                        "command": session.command,
-                        "exit_code": session.exit_code,
-                        "completion_reason": getattr(session, "completion_reason", "exited"),
-                        "termination_source": getattr(session, "termination_source", ""),
-                        "output": _out,
-                    })
+                    completion_evt["command"] = _cmd
+                    completion_evt["output"] = _out
+                    synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break
                     source = self._build_process_event_source({
@@ -13189,6 +13264,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 message_type=MessageType.TEXT,
                                 source=source,
                                 internal=True,
+                                internal_event_kind=InternalEventKind.BACKGROUND_COMPLETION.value,
+                                internal_event_source="gateway",
                                 message_id=message_id,
                             )
                             logger.info(
@@ -13205,10 +13282,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 # --- Normal text-only notification ---
                 # Decide whether to notify based on mode
-                should_notify = (
-                    notify_mode in {"all", "result"}
-                    or (notify_mode == "error" and session.exit_code not in {0, None})
-                )
+                should_notify = should_queue_process_notification(completion_evt, notify_mode)
                 if should_notify:
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
                     message_text = (

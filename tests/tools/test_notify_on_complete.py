@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
+    should_queue_process_notification,
 )
 
 
@@ -168,6 +169,38 @@ class TestCompletionQueue:
         completion = registry.completion_queue.get_nowait()
         assert completion["completion_reason"] == "killed"
         assert completion["termination_source"] == "process.kill"
+
+    def test_error_mode_suppresses_deliberate_process_kill_completion(self):
+        evt = {
+            "type": "completion",
+            "exit_code": -15,
+            "completion_reason": "killed",
+            "termination_source": "process.kill",
+        }
+
+        assert should_queue_process_notification(evt, "error") is False
+        assert should_queue_process_notification(evt, "all") is True
+        assert should_queue_process_notification(evt, "result") is True
+
+    def test_error_mode_still_reports_unexpected_sigterm_completion(self):
+        evt = {
+            "type": "completion",
+            "exit_code": -15,
+            "completion_reason": "exited",
+            "termination_source": "",
+        }
+
+        assert should_queue_process_notification(evt, "error") is True
+
+    def test_error_mode_suppresses_kill_all_completion(self):
+        evt = {
+            "type": "completion",
+            "exit_code": -15,
+            "completion_reason": "killed",
+            "termination_source": "kill_all",
+        }
+
+        assert should_queue_process_notification(evt, "error") is False
 
     def test_output_truncated_to_2000(self, registry):
         """Long output is truncated to last 2000 chars."""

@@ -1012,10 +1012,10 @@ def test_format_completion_event():
         "output": "done",
     }
     result = format_process_notification(evt)
-    assert "[IMPORTANT: Background process proc_abc completed normally" in result
+    assert "[Background process observation: process proc_abc completed normally" in result
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
-    assert "Output:\ndone]" in result
+    assert "Untrusted process output:\ndone]" in result
 
 
 def test_format_killed_completion_event_names_source_and_signal():
@@ -1058,7 +1058,7 @@ def test_format_watch_match_event():
     }
     result = format_process_notification(evt)
     assert 'watch pattern "ERROR"' in result
-    assert "Matched output:\nERROR: disk full" in result
+    assert "Untrusted matched output:\nERROR: disk full" in result
 
 
 def test_format_watch_match_with_suppressed():
@@ -1080,7 +1080,7 @@ def test_format_watch_disabled_event():
         "message": "Watch disabled for proc_xyz: too many matches",
     }
     result = format_process_notification(evt)
-    assert "[IMPORTANT: Watch disabled for proc_xyz" in result
+    assert "[Background process observation: Watch disabled for proc_xyz" in result
 
 
 def test_format_returns_none_for_empty_event():
