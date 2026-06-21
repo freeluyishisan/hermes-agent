@@ -7,11 +7,14 @@ import {
   $sessionPreviewRegistry,
   beginPreviewServerRestart,
   completePreviewServerRestart,
+  finishAllBuildingArtifactTabs,
   getSessionPreviewRecord,
+  openArtifactTab,
   progressPreviewServerRestart,
   requestPreviewReload,
   setPreviewTarget,
-  setSessionPreviewTarget
+  setSessionPreviewTarget,
+  touchArtifactTab
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
@@ -85,6 +88,60 @@ function structuredPreviewCandidate(payload: unknown): string {
   }
 
   return ''
+}
+
+/** Tool names that produce HTML artifacts when they write files. */
+const ARTIFACT_TOOL_NAMES = new Set(['write_file', 'patch', 'append_file', 'write'])
+
+/** Check if a string looks like an HTML file path. */
+function isHtmlPath(value: string): boolean {
+  return /\.html?$/i.test(value)
+}
+
+/**
+ * Extract an HTML file path from a tool call payload (tool.start / tool.progress).
+ * Returns the raw path string or null.
+ */
+function artifactPathFromCall(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null
+  const rec = payload as Record<string, unknown>
+
+  // arguments/args may be a string (positional) or an object with named fields
+  const args = rec.arguments ?? rec.args
+  if (typeof args === 'string') {
+    return isHtmlPath(args) ? args.trim() : null
+  }
+  if (typeof args === 'object' && args !== null) {
+    const argsObj = args as Record<string, unknown>
+    for (const key of ['path', 'file_path', 'filePath', 'file']) {
+      const v = argsObj[key]
+      if (typeof v === 'string' && isHtmlPath(v)) return v.trim()
+    }
+  }
+
+  // Fallback: scan all string values for HTML paths
+  for (const val of Object.values(rec)) {
+    if (typeof val === 'string' && isHtmlPath(val)) return val.trim()
+  }
+  return null
+}
+
+/** Extract an HTML file path from a tool result payload (tool.complete). */
+function artifactPathFromResult(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null
+  const rec = payload as Record<string, unknown>
+  for (const key of ['path', 'file', 'filepath', 'file_path', 'target_path', 'artifact']) {
+    const v = rec[key]
+    if (typeof v === 'string' && isHtmlPath(v)) return v.trim()
+  }
+  return null
+}
+
+/** Get the tool name from a gateway event payload. */
+function getToolName(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return ''
+  const rec = payload as Record<string, unknown>
+  return String(rec.name ?? rec.tool ?? rec.tool_name ?? '')
 }
 
 export function usePreviewRouting({
@@ -210,13 +267,44 @@ export function usePreviewRouting({
         return
       }
 
+      // Artifact sidecar: detect write_file/patch of HTML files
+      const toolName = getToolName(event.payload)
+      const isArtifactTool = ARTIFACT_TOOL_NAMES.has(toolName)
+
+      if (isArtifactTool && (event.type === 'tool.start' || event.type === 'tool.progress')) {
+        const artifactPath = artifactPathFromCall(event.payload)
+        if (artifactPath) {
+          touchArtifactTab(artifactPath)
+          const desktop = window.hermesDesktop
+          if (desktop?.normalizePreviewTarget) {
+            const sessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
+            void desktop.normalizePreviewTarget(artifactPath, currentCwd || undefined)
+              .then(normalized => {
+                if (normalized && normalized.kind === 'file' && normalized.previewKind === 'html') {
+                  const currentSid = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
+                  if (currentSid === sessionId) openArtifactTab(normalized)
+                }
+              })
+              .catch(() => {})
+          }
+        }
+      } else if (isArtifactTool && event.type === 'tool.complete') {
+        const artifactPath = artifactPathFromResult(event.payload)
+        if (artifactPath) touchArtifactTab(artifactPath)
+      }
+
+      // Mark all building artifacts as done when the agent's turn completes
+      if (event.type === 'message.complete' || event.type === 'message.cancelled') {
+        finishAllBuildingArtifactTabs()
+      }
+
       void registerStructuredPreview(event)
 
       if ($previewTarget.get()?.kind === 'url' && gatewayEventCompletedFileDiff(event)) {
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent, registerStructuredPreview]
+    [activeSessionIdRef, baseHandleGatewayEvent, currentCwd, registerStructuredPreview, routedSessionId, selectedStoredSessionId]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

@@ -16,8 +16,10 @@ import {
   $filePreviewTabs,
   $previewReloadRequest,
   $previewTarget,
+  ARTIFACT_BUILD_TIMEOUT_MS,
   closeRightRail,
   closeRightRailTab,
+  decayArtifactStatus,
   type PreviewTarget
 } from '@/store/preview'
 
@@ -43,6 +45,7 @@ interface RailTab {
   id: RightRailTabId
   label: string
   target: PreviewTarget
+  artifactStatus?: 'building' | 'done'
 }
 
 function tabLabelFor(target: PreviewTarget): string {
@@ -62,10 +65,16 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const tabs = useMemo<readonly RailTab[]>(
     () => [
       ...(previewTarget ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab] : []),
-      ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
+      ...filePreviewTabs.map(({ id, target, artifactStatus }) => ({ id, label: tabLabelFor(target), target, artifactStatus }) as RailTab)
     ],
     [filePreviewTabs, previewTarget, t.preview.tab]
   )
+
+  // Decay 'building' status for artifacts not touched within timeout
+  useEffect(() => {
+    const timer = setInterval(decayArtifactStatus, ARTIFACT_BUILD_TIMEOUT_MS)
+    return () => clearInterval(timer)
+  }, [])
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
 
@@ -123,11 +132,20 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                 <Tip label={tab.label}>
                   <button
                     aria-selected={active}
-                    className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
+                    className="flex h-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden pl-3 pr-2 text-left outline-none"
                     onClick={() => selectRightRailTab(tab.id)}
                     role="tab"
                     type="button"
                   >
+                    {tab.artifactStatus === 'building' && (
+                      <span className="relative flex h-2 w-2 shrink-0">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                      </span>
+                    )}
+                    {tab.artifactStatus === 'done' && (
+                      <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-emerald-500/50" />
+                    )}
                     <span className="block min-w-0 truncate">{tab.label}</span>
                   </button>
                 </Tip>
