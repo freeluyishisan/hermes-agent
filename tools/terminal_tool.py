@@ -47,6 +47,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+# Windows subprocess creation flag to suppress console windows that flash
+# on every terminal invocation.  See: issues #49851, #42544.
+IS_WINDOWS = platform.system() == "Windows"
+_CREATE_NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
+
 logger = logging.getLogger(__name__)
 
 
@@ -638,6 +643,7 @@ def _sudo_nopasswd_works() -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
             timeout=3,
             check=False,
         )
@@ -2128,13 +2134,13 @@ def check_terminal_requirements() -> bool:
             if not docker:
                 logger.error("Docker executable not found in PATH or common install locations")
                 return False
-            result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
+            result = subprocess.run([docker, "version"], capture_output=True, timeout=5, creationflags=_CREATE_NO_WINDOW)
             return result.returncode == 0
 
         elif env_type == "singularity":
             executable = shutil.which("apptainer") or shutil.which("singularity")
             if executable:
-                result = subprocess.run([executable, "--version"], capture_output=True, timeout=5)
+                result = subprocess.run([executable, "--version"], capture_output=True, timeout=5, creationflags=_CREATE_NO_WINDOW)
                 return result.returncode == 0
             return False
 

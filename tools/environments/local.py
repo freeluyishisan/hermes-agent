@@ -12,6 +12,9 @@ from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+# Windows subprocess creation flags — suppress console windows that flash
+# on every terminal invocation.  See: issues #49851, #42544.
+
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
@@ -368,6 +371,7 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=0x08000000 if _IS_WINDOWS else 0,  # CREATE_NO_WINDOW: suppress console flash
             cwd=self.cwd,
         )
         if not _IS_WINDOWS:

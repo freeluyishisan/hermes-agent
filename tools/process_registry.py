@@ -546,6 +546,7 @@ class ProcessRegistry:
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=0x08000000 if _IS_WINDOWS else 0,  # CREATE_NO_WINDOW: suppress console flash
         )
 
         session.process = proc
