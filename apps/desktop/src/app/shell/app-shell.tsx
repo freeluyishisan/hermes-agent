@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
-import { useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 
 import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
@@ -22,7 +22,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
-import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
+import { TITLEBAR_HEIGHT, titlebarControlsPosition, titlebarSafeArea } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 interface AppShellProps {
@@ -89,7 +89,24 @@ export function AppShell({
   // on macOS, where window controls sit on the left and are reported via
   // windowButtonPosition instead). The right tool cluster has to clear them.
   const nativeOverlayWidth = connection?.nativeOverlayWidth ?? 0
+  const titlebarSafe = titlebarSafeArea(connection?.windowButtonPosition, nativeOverlayWidth, isFullscreen)
   const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
+
+  useEffect(() => {
+    const root = document.documentElement
+
+    // AppShell already owns the titlebar height. Mirror it to :root because
+    // Radix portals mount under <body>, outside the SidebarProvider subtree.
+    root.style.setProperty('--titlebar-height', `${TITLEBAR_HEIGHT}px`)
+    root.style.setProperty('--titlebar-safe-left', `${titlebarSafe.left}px`)
+    root.style.setProperty('--titlebar-safe-right', `${titlebarSafe.right}px`)
+
+    return () => {
+      root.style.removeProperty('--titlebar-height')
+      root.style.removeProperty('--titlebar-safe-left')
+      root.style.removeProperty('--titlebar-safe-right')
+    }
+  }, [titlebarSafe.left, titlebarSafe.right])
 
   // The inset clears the top-left titlebar buttons when nothing covers the
   // window's left edge. Default layout: the sessions sidebar sits there.
@@ -156,6 +173,8 @@ export function AppShell({
           '--titlebar-content-inset': `${titlebarContentInset}px`,
           '--titlebar-controls-left': `${titlebarControls.left}px`,
           '--titlebar-controls-top': `${titlebarControls.top}px`,
+          '--titlebar-safe-left': `${titlebarSafe.left}px`,
+          '--titlebar-safe-right': `${titlebarSafe.right}px`,
           '--titlebar-tools-right': titlebarToolsRight,
           '--titlebar-tools-width': titlebarToolsWidth,
           // Anchor for the pane-tool cluster's right edge in TitlebarControls.

@@ -165,6 +165,12 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
+function chromeSurfaceColor(background: string, isDark: boolean): string {
+  // Mirrors --ui-bg-chrome from styles.css. Electron's Windows/Linux
+  // titleBarOverlay needs a concrete hex color, not a CSS color-mix() token.
+  return mix(background, isDark ? '#0d0d0e' : '#f3f3f3', isDark ? 0.26 : 0.08)
+}
+
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   if (typeof document === 'undefined') {
     return
@@ -223,7 +229,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   }
 
   window.hermesDesktop?.setTitleBarTheme?.({
-    background: c.background,
+    background: chromeSurfaceColor(c.background, isDark),
     foreground: c.foreground
   })
 

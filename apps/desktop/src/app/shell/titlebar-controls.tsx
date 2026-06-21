@@ -137,13 +137,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   ]
 
-  // While a full-screen overlay (settings, command center, …) is open it should
-  // visually own the window. These control clusters are `fixed` at a higher
-  // z-index than the overlay card, so they'd otherwise bleed over it — hide them
-  // and let the overlay's own chrome (close button, drag region) take over.
-  if (isOverlayView(appViewForPath(location.pathname))) {
-    return null
-  }
+  // Full-screen route overlays (settings, command center, …) should coexist
+  // with the persistent titlebar chrome instead of unmounting it. Keep the
+  // controls visible as spatial anchors, but make Hermes-owned buttons inert
+  // while the overlay owns focus/interactions. Native OS controls remain native.
+  const overlayRouteOpen = isOverlayView(appViewForPath(location.pathname))
 
   const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
   const settingsTool = visibleSystemTools.find(tool => tool.id === 'settings')
@@ -152,6 +150,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   return (
     <>
+      {overlayRouteOpen && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed inset-x-0 top-0 z-60 h-(--titlebar-height) bg-(--ui-chat-surface-background)"
+        />
+      )}
+
       <div
         aria-label={t.shell.windowControls}
         className="fixed left-(--titlebar-controls-left) top-(--titlebar-controls-top) z-70 flex translate-y-0.5 flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
@@ -159,7 +164,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {leftToolbarTools
           .filter(tool => !tool.hidden)
           .map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+            <TitlebarToolButton disabled={overlayRouteOpen} key={tool.id} navigate={navigate} tool={tool} />
           ))}
       </div>
 
@@ -177,7 +182,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
           className="fixed top-(--titlebar-controls-top) right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))] z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
         >
           {visiblePaneTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+            <TitlebarToolButton disabled={overlayRouteOpen} key={tool.id} navigate={navigate} tool={tool} />
           ))}
         </div>
       )}
@@ -187,29 +192,51 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
       >
         {visibleSystemToolsBeforeSettings.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          <TitlebarToolButton disabled={overlayRouteOpen} key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
-        <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        {settingsTool && <TitlebarToolButton disabled={overlayRouteOpen} navigate={navigate} tool={settingsTool} />}
+        <TitlebarToolButton disabled={overlayRouteOpen} navigate={navigate} tool={rightSidebarTool} />
       </div>
     </>
   )
 }
 
-function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
+function TitlebarToolButton({
+  disabled = false,
+  navigate,
+  tool
+}: {
+  disabled?: boolean
+  navigate: ReturnType<typeof useNavigate>
+  tool: TitlebarTool
+}) {
   // Titlebar actions never show an active background — state reads from the
   // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
   // for a11y.
-  const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
+  const isDisabled = disabled || tool.disabled
+
+  const className = cn(
+    titlebarButtonClass,
+    'bg-transparent select-none',
+    isDisabled && 'pointer-events-none opacity-45',
+    tool.className
+  )
 
   if (tool.href) {
     return (
       <Button asChild className={className} size="icon-titlebar" variant="ghost">
         <a
+          aria-disabled={isDisabled || undefined}
           aria-label={tool.label}
           href={tool.href}
+          onClick={event => {
+            if (isDisabled) {
+              event.preventDefault()
+            }
+          }}
           onPointerDown={event => event.stopPropagation()}
           rel="noreferrer"
+          tabIndex={isDisabled ? -1 : undefined}
           target="_blank"
           title={tool.title ?? tool.label}
         >
@@ -224,7 +251,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
       aria-label={tool.label}
       aria-pressed={tool.active ?? undefined}
       className={className}
-      disabled={tool.disabled}
+      disabled={isDisabled}
       onClick={() => {
         if (tool.to) {
           navigate(tool.to)
