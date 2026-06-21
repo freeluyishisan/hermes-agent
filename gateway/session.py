@@ -777,9 +777,11 @@ class SessionStore:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
+                        if not isinstance(entry_data, dict):
+                            continue
                         try:
                             self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
+                        except (ValueError, KeyError, TypeError):
                             # Skip entries with unknown/removed platform values
                             continue
             except Exception as e:
