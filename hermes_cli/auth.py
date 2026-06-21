@@ -2163,6 +2163,31 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 # Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
 # =============================================================================
 
+def _mark_anthropic_oauth_active(creds: Dict[str, Any]) -> None:
+    """Set active_provider to anthropic in auth.json after OAuth add.
+
+    The OAuth tokens live in the credential pool (pool.add_entry) and the
+    Hermes-managed OAuth file (~/.hermes/.anthropic_oauth.json). This function
+    only writes a minimal provider-state entry and sets active_provider so that
+    get_active_provider() and _model_section_has_credentials() detect the
+    provider for the setup wizard and status commands — without duplicating the
+    access/refresh tokens into auth.json where they would become stale.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        # Start from any existing anthropic provider state so re-running
+        # `hermes auth add anthropic` does not discard previously stored
+        # metadata (e.g. future labels/config/migration artifacts). We only
+        # overwrite the keys this function owns.
+        providers = auth_store.get("providers")
+        existing = providers.get("anthropic") if isinstance(providers, dict) else None
+        state: Dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        if creds.get("expires_at_ms"):
+            state["expires_at_ms"] = int(creds["expires_at_ms"])
+        _save_provider_state(auth_store, "anthropic", state)
+        _save_auth_store(auth_store)
+
+
 def _mark_google_gemini_cli_active(creds: Dict[str, Any]) -> None:
     """Set active_provider to google-gemini-cli in auth.json.
 

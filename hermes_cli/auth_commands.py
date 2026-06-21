@@ -244,6 +244,11 @@ def auth_add_command(args) -> None:
             base_url=_provider_base_url(provider),
         )
         pool.add_entry(entry)
+        # Only mark the provider active once the credential has actually been
+        # persisted. Marking it before pool.add_entry() can leave auth.json
+        # reporting anthropic as active with no backing credential if the
+        # persist raises (disk/permission error).
+        auth_mod._mark_anthropic_oauth_active(creds)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
