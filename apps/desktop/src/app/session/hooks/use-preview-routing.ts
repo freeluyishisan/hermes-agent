@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { basename } from 'path'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
@@ -245,7 +246,28 @@ export function usePreviewRouting({
     [activeSessionIdRef, currentCwd, requestGateway]
   )
 
-  const handleDesktopGatewayEvent = useCallback<EventHandler>(
+  
+/** Open the artifact tab and normalize the path through the desktop preload. */
+function openArtifactTabAndNormalize(artifactPath: string) {
+  touchArtifactTab(artifactPath)
+  const desktop = window.hermesDesktop
+  const activeSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
+  if (desktop?.normalizePreviewTarget) {
+    void desktop.normalizePreviewTarget(artifactPath, currentCwd || undefined)
+      .then(normalized => {
+        if (normalized && normalized.kind === 'file' && normalized.previewKind === 'html') {
+          const currentSid = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
+          if (currentSid === activeSessionId) openArtifactTab(normalized)
+        }
+      })
+      .catch(() => {
+        // If normalization fails, try to open directly
+        openArtifactTab({ kind: 'file', url: artifactPath, previewKind: 'html', label: basename(artifactPath), source: 'tool-result' })
+      })
+  }
+}
+
+const handleDesktopGatewayEvent = useCallback<EventHandler>(
     event => {
       baseHandleGatewayEvent(event)
 
@@ -268,29 +290,30 @@ export function usePreviewRouting({
       }
 
       // Artifact sidecar: detect write_file/patch of HTML files
+      //
+      // tui_gateway emits:
+      //   tool.start  -> { tool_id, name, context }   — no args
+      //   tool.complete -> { tool_id, name, args, result }  — path in args.path / result.path
+      // We open the artifact tab on tool.complete when we can resolve the HTML path.
       const toolName = getToolName(event.payload)
-      const isArtifactTool = ARTIFACT_TOOL_NAMES.has(toolName)
 
-      if (isArtifactTool && (event.type === 'tool.start' || event.type === 'tool.progress')) {
-        const artifactPath = artifactPathFromCall(event.payload)
-        if (artifactPath) {
-          touchArtifactTab(artifactPath)
-          const desktop = window.hermesDesktop
-          if (desktop?.normalizePreviewTarget) {
-            const sessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
-            void desktop.normalizePreviewTarget(artifactPath, currentCwd || undefined)
-              .then(normalized => {
-                if (normalized && normalized.kind === 'file' && normalized.previewKind === 'html') {
-                  const currentSid = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
-                  if (currentSid === sessionId) openArtifactTab(normalized)
-                }
-              })
-              .catch(() => {})
+      if (event.type === 'tool.start' || event.type === 'tool.progress') {
+        const isArtifactTool = ARTIFACT_TOOL_NAMES.has(toolName)
+        if (isArtifactTool) {
+          // tool.start sometimes carries arguments (api_server path); try them.
+          const artifactPath = artifactPathFromCall(event.payload)
+          if (artifactPath) {
+            openArtifactTabAndNormalize(artifactPath)
           }
         }
-      } else if (isArtifactTool && event.type === 'tool.complete') {
-        const artifactPath = artifactPathFromResult(event.payload)
-        if (artifactPath) touchArtifactTab(artifactPath)
+      } else if (event.type === 'tool.complete') {
+        const isArtifactTool = ARTIFACT_TOOL_NAMES.has(toolName)
+        if (isArtifactTool) {
+          const artifactPath = artifactPathFromResult(event.payload)
+          if (artifactPath) {
+            openArtifactTabAndNormalize(artifactPath)
+          }
+        }
       }
 
       // Mark all building artifacts as done when the agent's turn completes
