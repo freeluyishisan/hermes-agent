@@ -744,3 +744,99 @@ def test_batchK_literal_not_unwrapped(literal):
     assert literal not in _TELEGRAM_SRC, (
         f"unwrapped English literal still present in telegram.py: {literal!r}"
     )
+
+
+# ============================================================================
+# Batch M: agent/conversation_loop.py — retry/compression/refusal/interrupt notices
+# ============================================================================
+
+from agent import conversation_loop as _conv_loop  # noqa: E402
+
+_CONV_LOOP_SRC = Path(_conv_loop.__file__).read_text(encoding="utf-8")
+
+# Each new key with representative kwargs covering every placeholder it declares.
+_BATCH_M_KEYS = [
+    ("gateway.cl_ollama_context_too_small", {}),
+    ("gateway.cl_nous_rate_limit", {"reset": "5m"}),
+    ("gateway.cl_empty_malformed_switching", {}),
+    ("gateway.cl_max_retries_invalid_trying_fallback", {"max": 3}),
+    ("gateway.cl_max_retries_invalid_giving_up", {"max": 3}),
+    ("gateway.cl_refusal_status", {}),
+    ("gateway.cl_context_reduced", {"reduced": "1,000", "old": "2,000"}),
+    ("gateway.cl_billing_switching_fallback", {}),
+    ("gateway.cl_rate_limited_switching_fallback", {}),
+    ("gateway.cl_payload_too_large", {"n": 1, "max": 3}),
+    ("gateway.cl_compressed_retrying", {"before": 10, "after": 4}),
+    ("gateway.cl_context_too_large_compressing", {"tokens": "99,999", "n": 2, "max": 3}),
+    ("gateway.cl_rate_limited_waiting", {"wait": "2.5", "n": 1, "max": 3}),
+    ("gateway.cl_retrying_in", {"wait": "2.5", "n": 1, "max": 3}),
+    ("gateway.cl_empty_after_tools_using_earlier", {}),
+    ("gateway.cl_content_policy_recovery_hint", {}),
+    ("gateway.cl_nous_no_fallback", {"nous": "Rate limit active — resets in 5m."}),
+    ("gateway.cl_refusal_explanation", {"explanation": "the prompt was unsafe"}),
+    ("gateway.cl_refusal_no_explanation", {}),
+    ("gateway.cl_refusal_response",
+     {"detail": "Model's explanation: nope", "hint": "Try rephrasing."}),
+    ("gateway.cl_thinking_budget_exhausted", {}),
+    ("gateway.cl_interrupted_handling_error",
+     {"error_type": "RateLimitError", "detail": "429 too many requests"}),
+    ("gateway.cl_policy_blocked_response",
+     {"summary": "content blocked by provider", "hint": "Try rephrasing."}),
+    ("gateway.cl_billing_exhausted", {"summary": "insufficient credits"}),
+    ("gateway.cl_stream_drop_hint", {}),
+    ("gateway.cl_interrupted_retrying", {"n": 2, "max": 5}),
+    ("gateway.cl_repeated_errors", {"error": "boom boom"}),
+]
+
+
+def test_batchM_key_count():
+    """Exactly 27 Batch M keys are exercised."""
+    assert len(_BATCH_M_KEYS) == 27
+
+
+@pytest.mark.parametrize("key,kwargs", _BATCH_M_KEYS)
+def test_batchM_key_resolves_in_russian(key, kwargs):
+    """Each Batch M key resolves in Russian, differs from English, and renders kwargs."""
+    reset_language_cache()
+    ru = i18n.t(key, lang="ru", **kwargs)
+    en = i18n.t(key, lang="en", **kwargs)
+    assert isinstance(ru, str) and ru, f"Empty or non-string Russian result for {key!r}"
+    assert ru != en, f"Russian must differ from English for {key!r}"
+    # No leftover placeholder tokens for any kwarg we provided.
+    for name in kwargs:
+        assert ("{" + name + "}") not in ru, f"{key}: unrendered {{{name}}} in Russian"
+        assert ("{" + name + "}") not in en, f"{key}: unrendered {{{name}}} in English"
+    # Provided values actually appear (stringified) in both renderings.
+    for value in kwargs.values():
+        assert str(value) in ru, f"{key}: value {value!r} missing from Russian"
+        assert str(value) in en, f"{key}: value {value!r} missing from English"
+
+
+@pytest.mark.parametrize("literal", [
+    '"❌ Ollama runtime context is too small for Hermes tool use"',
+    '"⚠️ Empty/malformed response — switching to fallback..."',
+    '"⚠️ **Thinking Budget Exhausted**\\n\\n"',
+    '"⚠️ Rate limited — switching to fallback provider..."',
+    '"I apologize, but I encountered repeated errors:',
+    '"Operation interrupted: retrying API call',
+    '"🗜️ Compressed ',
+    '"↻ Empty response after tool calls',
+    "\"Model's explanation: ",
+    '"The model returned no explanation."',
+])
+def test_batchM_literal_not_unwrapped(literal):
+    """The original English literals must no longer appear in conversation_loop.py."""
+    assert literal not in _CONV_LOOP_SRC, (
+        f"unwrapped English literal still present in conversation_loop.py: {literal!r}"
+    )
+
+
+def test_batchM_api_call_failed_marker_left_untouched():
+    """The 'API call failed' final_response is detected & rewritten by the gateway's
+    provider-error shape regex, so it must stay an English literal (NOT wrapped).
+    Presence documents the intentional exception."""
+    assert "API call failed after " in _CONV_LOOP_SRC
+    assert (
+        'f"API call failed after {max_retries} retries: {_final_summary}"'
+        in _CONV_LOOP_SRC
+    )
