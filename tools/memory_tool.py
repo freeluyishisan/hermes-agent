@@ -121,13 +121,28 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        base_dir: Optional[Path] = None,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # When bound (e.g. a profile-backed subagent), all reads/writes target
+        # THIS directory for the store's lifetime — independent of the ambient
+        # HERMES_HOME at call time and of the running thread. When None, the
+        # directory is resolved live via get_memory_dir() so a main agent still
+        # follows profile switches (see get_memory_dir's note above).
+        self._base_dir: Optional[Path] = Path(base_dir) if base_dir is not None else None
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+
+    def _memory_dir(self) -> Path:
+        """Resolve the store's memory directory: bound dir if set, else live."""
+        return self._base_dir if self._base_dir is not None else get_memory_dir()
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -146,7 +161,7 @@ class MemoryStore:
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
         """
-        mem_dir = get_memory_dir()
+        mem_dir = self._memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
@@ -241,9 +256,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = self._memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -272,7 +286,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        self._memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:

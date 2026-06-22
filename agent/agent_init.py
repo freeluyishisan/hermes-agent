@@ -1190,9 +1190,18 @@ def init_agent(
                 agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 if agent._memory_enabled or agent._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
+                    # Bind the store to the profile's memories dir so the child's
+                    # RUNTIME reads/writes (memory tool, nudges, post-compression
+                    # reloads) stay on the profile — the construction-time scope
+                    # alone doesn't survive into the run (worker thread, override
+                    # already reset). None for the main agent → live resolution.
+                    _mem_base_dir = (
+                        os.path.join(profile_home, "memories") if profile_home else None
+                    )
                     agent._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        base_dir=_mem_base_dir,
                     )
                     agent._memory_store.load_from_disk()
             except Exception:

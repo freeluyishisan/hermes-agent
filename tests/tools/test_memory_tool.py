@@ -786,3 +786,52 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+# =========================================================================
+# base_dir binding (profile-backed subagent memory)
+# =========================================================================
+
+class TestMemoryStoreBaseDirBinding:
+    """A bound store must target its base_dir for the instance's lifetime,
+    independent of the ambient HERMES_HOME at call time (a profile-backed
+    subagent runs on a worker thread with no profile scope active). An
+    unbound store must keep resolving live so a main agent follows profile
+    switches.
+    """
+
+    def test_bound_store_ignores_ambient_hermes_home(self, tmp_path):
+        from hermes_constants import (
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+
+        bound = tmp_path / "prof" / "memories"
+        other = tmp_path / "other"
+        store = MemoryStore(base_dir=bound)
+
+        tok = set_hermes_home_override(str(other))
+        try:
+            # Path + a real write resolve to the bound dir, not the ambient one.
+            assert store._path_for("memory") == bound / "MEMORY.md"
+            store.add("memory", "bound-write")
+        finally:
+            reset_hermes_home_override(tok)
+
+        assert (bound / "MEMORY.md").read_text().find("bound-write") != -1
+        assert not (other / "memories" / "MEMORY.md").exists()
+        # Still bound after the ambient scope is gone (runtime case).
+        assert store._path_for("memory") == bound / "MEMORY.md"
+
+    def test_unbound_store_resolves_live(self, tmp_path):
+        from hermes_constants import (
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+
+        store = MemoryStore()  # base_dir=None
+        tok = set_hermes_home_override(str(tmp_path / "live"))
+        try:
+            assert store._path_for("memory") == tmp_path / "live" / "memories" / "MEMORY.md"
+        finally:
+            reset_hermes_home_override(tok)
