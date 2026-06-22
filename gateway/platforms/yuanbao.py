@@ -96,6 +96,7 @@ from gateway.platforms.yuanbao_proto import (
     next_seq_no,
 )
 from gateway.session import build_session_key
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -4857,11 +4858,11 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output."""
-        if not content.startswith("Cronjob Response: "):
+        if not content.startswith(t("gateway.cron_response_prefix")):
             return content
 
         divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        footer_prefix = t("gateway.cron_stop_hint_prefix")
         divider_pos = content.find(divider)
         footer_pos = content.rfind(footer_prefix)
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos:

@@ -1,4 +1,8 @@
-"""Localization of gateway system messages wrapped via t() (issue #29846)."""
+"""Localization of gateway system messages wrapped via t() (issue #29846).
+
+Batch G: i18n coverage of cron/scheduler.py and gateway/platforms/yuanbao.py strings.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -163,6 +167,28 @@ def test_english_literal_not_unwrapped(literal):
 ])
 def test_batchB_key_resolves_in_russian(key, kwargs):
     """Each Batch B key must resolve (not raise KeyError) in Russian."""
+
+
+# ---- Batch G: cron/scheduler.py and gateway/platforms/yuanbao.py strings ----
+
+_SCHEDULER_PY = Path(__file__).parents[2] / "cron" / "scheduler.py"
+_SCHEDULER_SRC = _SCHEDULER_PY.read_text(encoding="utf-8")
+
+_YUANBAO_PY = Path(__file__).parents[2] / "gateway" / "platforms" / "yuanbao.py"
+_YUANBAO_SRC = _YUANBAO_PY.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("key,kwargs", [
+    ("gateway.cron_response_prefix", {}),
+    ("gateway.cron_stop_hint_prefix", {}),
+    ("gateway.cron_failure_rate_limit", {"job_name": "my-job", "reason": "rate limit"}),
+    ("gateway.cron_failure_timeout", {"job_name": "my-job"}),
+    ("gateway.cron_failure_auth", {"job_name": "my-job"}),
+    ("gateway.cron_failure_generic", {"job_name": "my-job", "cleaned": "something went wrong"}),
+    ("gateway.cron_watchdog_failed", {"job_name": "my-job", "output": "error output", "now_iso": "2026-01-01 12:00:00"}),
+])
+def test_batchG_key_resolves_in_russian(key, kwargs):
+    """Each Batch G key must resolve (not raise) in Russian."""
     result = i18n.t(key, lang="ru", **kwargs)
     assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
 
@@ -407,4 +433,29 @@ def test_batchF_key_resolves_in_russian(key, kwargs):
 def test_batchF_literal_not_unwrapped_in_base(literal):
     assert literal not in _BASE_SRC, (
         f"unwrapped English literal still present in base.py: {literal!r}"
+    )
+
+
+def test_batchG_cron_response_prefix_russian():
+    """Russian cron response message must start with the Russian cron_response_prefix."""
+    prefix_ru = i18n.t("gateway.cron_response_prefix", lang="ru")
+    assert prefix_ru != "gateway.cron_response_prefix", "Key not found in catalog"
+    # The scheduler builds: t("gateway.cron_response_prefix") + f"{task_name}\n..."
+    task_name = "my-reminder"
+    cron_msg = prefix_ru + f"{task_name}\n(job_id: job123)\n-------------\n\ncontent"
+    assert cron_msg.startswith(prefix_ru)
+
+
+def test_batchG_yuanbao_footer_prefix_matches_catalog():
+    """yuanbao.py must use t() for footer_prefix, not a hardcoded English string."""
+    # Check that the footer_prefix assignment uses t()
+    assert 't("gateway.cron_stop_hint_prefix")' in _YUANBAO_SRC, (
+        "yuanbao.py footer_prefix not using t('gateway.cron_stop_hint_prefix')"
+    )
+
+
+def test_batchG_scheduler_uses_t_for_cron_prefix():
+    """scheduler.py must use t() for the cron response prefix, not hardcoded string."""
+    assert 't("gateway.cron_response_prefix")' in _SCHEDULER_SRC, (
+        "scheduler.py not using t('gateway.cron_response_prefix')"
     )

@@ -23,6 +23,13 @@ gateway:
   config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"
   config_save_failed: "⚠️ Não foi possível guardar a configuração: {error}"
   codex_gpt55_autoraise_notice: "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to {to_pct}% (from {from_pct}%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+  cron_response_prefix: "Cronjob Response: "
+  cron_stop_hint_prefix: "\n\nTo stop or manage this job, send me a new message (e.g. \"stop reminder "
+  cron_failure_rate_limit: "⚠️ Cron '{job_name}' failed: provider {reason}. Fallback chain was exhausted or unavailable. Full details saved in cron output."
+  cron_failure_timeout: "⚠️ Cron '{job_name}' failed: provider timeout. Fallback chain was exhausted or unavailable. Full details saved in cron output."
+  cron_failure_auth: "⚠️ Cron '{job_name}' failed: provider authentication error. Full details saved in cron output."
+  cron_failure_generic: "⚠️ Cron '{job_name}' failed: {cleaned}"
+  cron_watchdog_failed: "⚠ Cron watchdog '{job_name}' script failed\n\n{output}\n\nTime: {now_iso}"
 
   restart_success:       "♻ Gateway restarted successfully. Your session continues."
   gateway_online:        "♻️ Gateway online — Hermes is back and ready."
