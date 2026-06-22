@@ -230,6 +230,7 @@ def init_agent(
     load_soul_identity: bool = False,
     skip_memory: bool = False,
     profile_home: str = None,
+    profile_memory_readonly: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -1176,6 +1177,13 @@ def init_agent(
     _mem_home_token = (
         set_hermes_home_override(profile_home) if profile_home else None
     )
+    # A profile-backed child reads the target profile's memory but (phase 1)
+    # must not write it back: bound store is read-only, nudges are off (no point
+    # prompting a write that will be refused), and the provider is initialized
+    # with agent_context="subagent" so it skips writes (sync_turn / on_memory_
+    # write / write tools) while retrieval still works. Only meaningful when a
+    # profile is actually impersonated.
+    _profile_readonly = bool(profile_home) and profile_memory_readonly
     agent._memory_manager = None
     try:
         if not skip_memory:
@@ -1188,6 +1196,9 @@ def init_agent(
                 agent._memory_enabled = mem_config.get("memory_enabled", False)
                 agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+                if _profile_readonly:
+                    # Don't nudge the model to save into a read-only profile.
+                    agent._memory_nudge_interval = 0
                 if agent._memory_enabled or agent._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     # Bind the store to the profile's memories dir so the child's
@@ -1202,6 +1213,7 @@ def init_agent(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
                         base_dir=_mem_base_dir,
+                        read_only=_profile_readonly,
                     )
                     agent._memory_store.load_from_disk()
             except Exception:
@@ -1225,7 +1237,12 @@ def init_agent(
                             "session_id": agent.session_id,
                             "platform": platform or "cli",
                             "hermes_home": str(get_hermes_home()),
-                            "agent_context": "primary",
+                            # "subagent" tells the provider this is a read-only
+                            # profile run: it skips writes (per the documented
+                            # agent_context contract) while retrieval still
+                            # works. "primary" otherwise (normal agent, or a
+                            # future write-back-enabled profile run).
+                            "agent_context": "subagent" if _profile_readonly else "primary",
                         }
                         if _init_kwargs["platform"] == "cli":
                             _init_kwargs["warning_callback"] = agent._emit_warning

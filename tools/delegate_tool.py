@@ -1325,6 +1325,10 @@ def _build_child_agent(
         # profile_home); ordinary subagents stay memory-less as before.
         skip_memory=(profile_home is None),
         profile_home=profile_home,
+        # Phase 1: a profile-backed child READS the profile's memory but never
+        # writes it back, so a bounded delegation can't pollute a specialist
+        # profile's long-term memory. (Write-back is a deliberate follow-up.)
+        profile_memory_readonly=(profile_home is not None),
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
@@ -1611,11 +1615,14 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
     profile_dir = get_profile_dir(canon)
 
     # SOUL.md is a plain file — read it directly (no env scoping needed).
+    # utf-8-sig strips a leading BOM (CONTRIBUTING.md rule #4): a Notepad-saved
+    # SOUL.md would otherwise inject '﻿' as the literal first character of the
+    # subagent's persona system prompt.
     soul = ""
     soul_path = profile_dir / "SOUL.md"
     try:
         if soul_path.is_file():
-            soul = soul_path.read_text(encoding="utf-8").strip()
+            soul = soul_path.read_text(encoding="utf-8-sig").strip()
     except Exception as exc:
         logger.debug("Could not read SOUL.md for profile %s: %s", canon, exc)
 
@@ -1638,12 +1645,15 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
         from dotenv import dotenv_values
 
         env_path = str(profile_dir / ".env")
-        # Windows editors may save .env as cp1252 — mirror the latin-1
-        # fallback in hermes_cli.env_loader (CONTRIBUTING.md cross-platform
-        # rule #4) so a non-UTF-8 profile .env doesn't silently yield no
-        # credentials.
+        # Mirror hermes_cli.env_loader's encoding handling (CONTRIBUTING.md
+        # cross-platform rule #4) so a profile .env touched by a Windows editor
+        # doesn't silently yield no credentials:
+        #   * utf-8-sig strips a leading BOM (Notepad-saved files) — plain
+        #     utf-8 would decode the BOM to '﻿' and corrupt the FIRST
+        #     key name without raising, silently dropping that credential.
+        #   * latin-1 fallback covers cp1252 bytes that aren't valid UTF-8.
         try:
-            raw_env = dotenv_values(env_path, encoding="utf-8")
+            raw_env = dotenv_values(env_path, encoding="utf-8-sig")
         except UnicodeDecodeError:
             raw_env = dotenv_values(env_path, encoding="latin-1")
         prof_env = {k: v for k, v in raw_env.items() if v is not None}
@@ -3245,9 +3255,10 @@ def _build_top_level_description() -> str:
         "under a named Hermes profile's identity — its SOUL.md persona, "
         "model/provider, and credentials. The subagent also adopts the "
         "profile's toolset preferences, bounded by your own available tool "
-        "surface (it never gains a tool you lack), and loads the profile's own "
+        "surface (it never gains a tool you lack), and reads the profile's own "
         "memory (built-in store + memory provider) under that profile's "
-        "identity, so it runs with that profile's accumulated knowledge. Use "
+        "identity — read-only, so it runs with that profile's accumulated "
+        "knowledge without modifying it. Use "
         "it to call a specialist profile for a bounded answer "
         "without Kanban. A top-level 'profile' applies to every batch task "
         "unless that task sets its own 'profile'. Works with background=true "
@@ -3373,9 +3384,10 @@ DELEGATE_TASK_SCHEMA = {
                     "specialist, returning its answer to you. The subagent "
                     "also adopts the profile's toolset preferences, bounded by "
                     "your own available tools (it never gains a tool you "
-                    "lack), and loads that profile's own memory (built-in "
-                    "store + memory provider) under the profile's identity, so "
-                    "it runs with the profile's accumulated knowledge. Use it "
+                    "lack), and reads that profile's own memory (built-in "
+                    "store + memory provider) under the profile's identity "
+                    "(read-only — the profile's accumulated knowledge is used "
+                    "but not modified). Use it "
                     "to call a specialist profile (e.g. "
                     "profile='reader' or 'security-reviewer') without going "
                     "through Kanban. The profile must already exist (`hermes "

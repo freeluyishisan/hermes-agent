@@ -835,3 +835,48 @@ class TestMemoryStoreBaseDirBinding:
             assert store._path_for("memory") == tmp_path / "live" / "memories" / "MEMORY.md"
         finally:
             reset_hermes_home_override(tok)
+
+
+# =========================================================================
+# read_only binding (profile-backed subagent memory is read, not written)
+# =========================================================================
+
+class TestMemoryStoreReadOnly:
+    """A read-only store loads + serves memory for reading but refuses every
+    mutation, so a profile-backed subagent never pollutes the specialist
+    profile's long-term memory (issue #41889, phase 1).
+    """
+
+    def _seed(self, base_dir):
+        base_dir.mkdir(parents=True, exist_ok=True)
+        (base_dir / "MEMORY.md").write_text("- pre-existing fact\n")
+
+    def test_read_only_store_reads_but_refuses_writes(self, tmp_path):
+        base = tmp_path / "prof" / "memories"
+        self._seed(base)
+        store = MemoryStore(base_dir=base, read_only=True)
+        store.load_from_disk()
+
+        # Reads work: the seeded entry is loaded and rendered for the prompt.
+        assert any("pre-existing fact" in e for e in store.memory_entries)
+        assert "pre-existing fact" in store.format_for_system_prompt("memory")
+
+        # Every mutation is refused, flagged read_only, and writes nothing.
+        for result in (
+            store.add("memory", "new fact"),
+            store.replace("memory", "pre-existing fact", "edited"),
+            store.remove("memory", "pre-existing fact"),
+            store.apply_batch("memory", [{"action": "add", "content": "x"}]),
+        ):
+            assert result["success"] is False
+            assert result["read_only"] is True
+
+        # Disk is untouched and in-memory entries are unchanged.
+        assert (base / "MEMORY.md").read_text() == "- pre-existing fact\n"
+        assert any("pre-existing fact" in e for e in store.memory_entries)
+        assert not any("new fact" in e for e in store.memory_entries)
+
+    def test_default_store_is_writable(self, tmp_path):
+        store = MemoryStore(base_dir=tmp_path / "m")  # read_only defaults False
+        assert store.add("memory", "kept")["success"] is True
+        assert any("kept" in e for e in store.memory_entries)

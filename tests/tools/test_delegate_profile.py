@@ -164,6 +164,55 @@ class TestResolveProfileBundle(unittest.TestCase):
         self.assertIsNone(seen["os_environ_value"])
         self.assertEqual(dict(os.environ), before)
 
+    def test_bom_prefixed_files_decoded_cleanly(self):
+        # Regression: a Windows editor (Notepad) saves .env / SOUL.md with a
+        # UTF-8 BOM. A BOM does NOT raise UnicodeDecodeError under plain utf-8 —
+        # it decodes to '﻿', which would corrupt the FIRST .env key name
+        # (silently dropping that credential) and inject '﻿' as the first
+        # character of the persona. utf-8-sig strips it; the latin-1 fallback
+        # only fires on cp1252, so it never covered this case.
+        import tempfile
+        from pathlib import Path
+        from agent.secret_scope import get_secret
+
+        seen = {}
+
+        def _capture(*_a, **_k):
+            # FIRST key must be intact — not '﻿PROFILE_ONLY_KEY'.
+            seen["scope_value"] = get_secret("PROFILE_ONLY_KEY")
+            return {"provider": "prov", "base_url": "u", "api_key": "k",
+                    "api_mode": "chat_completions"}
+
+        with tempfile.TemporaryDirectory() as td:
+            prof_dir = Path(td)
+            # encoding="utf-8-sig" writes the BOM, emulating Notepad.
+            (prof_dir / ".env").write_text(
+                "PROFILE_ONLY_KEY=secret-from-profile\n", encoding="utf-8-sig"
+            )
+            (prof_dir / "SOUL.md").write_text(
+                "You are the reader profile.", encoding="utf-8-sig"
+            )
+            with patch(
+                "hermes_cli.profiles.profile_exists", return_value=True
+            ), patch(
+                "hermes_cli.profiles.get_profile_dir", return_value=prof_dir
+            ), patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"default": "m", "provider": "prov"}},
+            ), patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                side_effect=_capture,
+            ), patch(
+                "hermes_cli.tools_config._get_platform_tools", return_value=set()
+            ):
+                bundle = _resolve_profile_bundle("reader")
+
+        # The first .env credential survived the BOM …
+        self.assertEqual(seen["scope_value"], "secret-from-profile")
+        # … and the persona starts at the real first character, no '﻿'.
+        self.assertEqual(bundle["soul"], "You are the reader profile.")
+        self.assertFalse(bundle["soul"].startswith("﻿"))
+
 
 class TestDelegateTaskProfileRouting(unittest.TestCase):
     def setUp(self):
