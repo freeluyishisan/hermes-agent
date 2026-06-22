@@ -1,6 +1,7 @@
-import { normalizeExternalUrl } from '@/lib/external-link'
-import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 import { translateNow } from '@/i18n'
+import { normalizeExternalUrl } from '@/lib/external-link'
+import { redactSensitiveValue } from '@/lib/secret-redaction'
+import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
 export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
@@ -901,8 +902,13 @@ function fallbackDetailText(args: unknown, result: unknown): string {
 }
 
 function cronScalar(value: unknown): string {
-  if (typeof value === 'string') return value.trim()
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'string') {
+    return value.trim()
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
 
   return ''
 }
@@ -910,7 +916,9 @@ function cronScalar(value: unknown): string {
 function formatCronTime(iso: string): string {
   const ts = Date.parse(iso)
 
-  if (Number.isNaN(ts)) return iso
+  if (Number.isNaN(ts)) {
+    return iso
+  }
 
   return new Date(ts).toLocaleString(undefined, {
     month: 'short',
@@ -932,7 +940,9 @@ function cronjobSubtitle(
 
   const message = firstStringField(resultRecord, ['message'])
 
-  if (message) return message
+  if (message) {
+    return message
+  }
 
   const action = firstStringField(argsRecord, ['action']) || 'manage'
   const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
@@ -948,7 +958,9 @@ function cronjobDetail(
   const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
 
   if (jobs) {
-    if (!jobs.length) return 'No cron jobs scheduled'
+    if (!jobs.length) {
+      return 'No cron jobs scheduled'
+    }
 
     return jobs
       .slice(0, 20)
@@ -963,12 +975,14 @@ function cronjobDetail(
   }
 
   const nextRun = cronScalar(resultRecord.next_run_at)
+
   const rows: [string, string][] = [
     ['Schedule', cronScalar(resultRecord.schedule)],
     ['Repeat', cronScalar(resultRecord.repeat)],
     ['Delivery', cronScalar(resultRecord.deliver)],
     ['Next run', nextRun ? formatCronTime(nextRun) : '']
   ]
+
   const lines = rows.filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`)
 
   return lines.length ? lines.join('\n') : fallbackDetailText(argsRecord, resultRecord)
@@ -1190,8 +1204,9 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     url: translateNow('assistant.tool.copyUrl'),
     generic: translateNow('common.copy')
   }
-  const args = parseMaybeObject(part.args)
-  const result = parseMaybeObject(part.result)
+
+  const args = parseMaybeObject(redactSensitiveValue(part.args))
+  const result = parseMaybeObject(redactSensitiveValue(part.result))
   const detail = view.detail.trim()
   const hasSubstantialOutput = detail.length > 16
 
@@ -1308,18 +1323,24 @@ function dynamicTitle(
 }
 
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
-  const argsRecord = parseMaybeObject(part.args)
-  const resultRecord = parseMaybeObject(part.result)
+  const safePart: ToolPart = {
+    ...part,
+    args: redactSensitiveValue(part.args),
+    result: redactSensitiveValue(part.result)
+  }
+
+  const argsRecord = parseMaybeObject(safePart.args)
+  const resultRecord = parseMaybeObject(safePart.result)
   const meta = toolMeta(part.toolName)
-  const status = toolStatus(part, resultRecord)
-  const error = toolErrorText(part, resultRecord)
-  const baseTitle = part.result === undefined ? meta.pending : meta.done
-  const title = dynamicTitle(part, argsRecord, resultRecord, baseTitle)
+  const status = toolStatus(safePart, resultRecord)
+  const error = toolErrorText(safePart, resultRecord)
+  const baseTitle = safePart.result === undefined ? meta.pending : meta.done
+  const title = dynamicTitle(safePart, argsRecord, resultRecord, baseTitle)
   const titleEnriched = title !== baseTitle
-  const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
+  const baseSubtitle = error || toolSubtitle(safePart, argsRecord, resultRecord)
   const keepSubtitleWithTitle = part.toolName === 'terminal' || part.toolName === 'execute_code'
   const subtitle = titleEnriched && !error && !keepSubtitleWithTitle ? '' : baseSubtitle
-  const detailBody = stripDividerLines(toolDetailText(part, argsRecord, resultRecord))
+  const detailBody = stripDividerLines(toolDetailText(safePart, argsRecord, resultRecord))
 
   const detail = error
     ? [error, detailBody]
@@ -1329,9 +1350,9 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     : detailBody
 
   const searchHits =
-    part.toolName === 'web_search' && status !== 'error' ? extractSearchResults(part.result) : undefined
+    safePart.toolName === 'web_search' && status !== 'error' ? extractSearchResults(safePart.result) : undefined
 
-  const resultCount = status === 'error' ? null : toolResultCount(part, argsRecord, resultRecord)
+  const resultCount = status === 'error' ? null : toolResultCount(safePart, argsRecord, resultRecord)
 
   // For shell/code tools we surface stdout and stderr as separate labeled
   // streams in the renderer. Many CLIs use stderr for informational
@@ -1354,8 +1375,8 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     imageUrl: toolImageUrl(argsRecord, resultRecord),
     inlineDiff,
     previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
-    rawArgs: prettyJson(part.args),
-    rawResult: prettyJson(part.result),
+    rawArgs: prettyJson(safePart.args),
+    rawResult: prettyJson(safePart.result),
     rendersAnsi: rendersAnsi || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,
     stderr: hasSplitStreams ? stderrRaw || undefined : undefined,
