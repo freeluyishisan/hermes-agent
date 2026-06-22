@@ -525,3 +525,88 @@ def test_batchH_slash_commands_uses_t_not_hardcoded():
     assert '"**Skill Bundles**' not in _SLASH_COMMANDS_PY
     assert '"Invoke a bundle with' not in _SLASH_COMMANDS_PY
     assert 'f"✗ {format_managed_message(' not in _SLASH_COMMANDS_PY
+
+
+# ============================================================================
+# Batch I: run_agent.py — aux_task_failed, file_mutation_verifier, no_reply_*
+# ============================================================================
+
+@pytest.mark.parametrize("key,kwargs", [
+    ("gateway.aux_task_failed", {"task": "compression", "detail": "timeout"}),
+    ("gateway.file_mutation_header", {"count": 3}),
+    ("gateway.file_mutation_bullet", {"path": "/foo/bar.py", "tool": "Edit", "preview": "KeyError"}),
+    ("gateway.file_mutation_more", {"remaining": 5}),
+    ("gateway.no_reply_empty_response_exhausted", {}),
+    ("gateway.no_reply_all_retries_exhausted", {}),
+    ("gateway.no_reply_partial_stream_recovery", {}),
+    ("gateway.no_reply_fallback_prior_turn_content", {}),
+    ("gateway.no_reply_interrupted_during_api_call", {}),
+    ("gateway.no_reply_budget_exhausted", {}),
+    ("gateway.no_reply_ollama_context_too_small", {}),
+    ("gateway.no_reply_max_iterations_reached", {}),
+    ("gateway.no_reply_error_near_max_iterations", {}),
+    ("gateway.no_reply_pending_tool_result", {}),
+])
+def test_batchI_key_resolves_in_russian(key, kwargs):
+    """Each Batch I key must resolve (not raise KeyError) in Russian."""
+    result = i18n.t(key, lang="ru", **kwargs)
+    assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
+
+
+def test_batchI_aux_task_failed_russian_differs_from_english():
+    """Russian aux_task_failed must not just echo the English string."""
+    en = i18n.t("gateway.aux_task_failed", lang="en", task="compression", detail="timeout")
+    ru = i18n.t("gateway.aux_task_failed", lang="ru", task="compression", detail="timeout")
+    assert "compression" in en and "compression" in ru
+    assert "timeout" in en and "timeout" in ru
+    assert en != ru
+
+
+def test_batchI_file_mutation_header_russian_differs_from_english():
+    """Russian file_mutation_header must contain a translated warning, not English."""
+    en = i18n.t("gateway.file_mutation_header", lang="en", count=2)
+    ru = i18n.t("gateway.file_mutation_header", lang="ru", count=2)
+    assert en != ru
+    assert "2" in en and "2" in ru
+
+
+def test_batchI_no_reply_budget_exhausted_russian_differs():
+    """Russian budget_exhausted clause must differ from English."""
+    en = i18n.t("gateway.no_reply_budget_exhausted", lang="en")
+    ru = i18n.t("gateway.no_reply_budget_exhausted", lang="ru")
+    assert en != ru
+    assert ru.startswith("⚠️")
+
+
+def test_batchI_no_reply_keys_start_with_warning_emoji():
+    """All no_reply_* Russian strings should start with the ⚠️ prefix."""
+    no_reply_keys = [
+        "gateway.no_reply_empty_response_exhausted",
+        "gateway.no_reply_all_retries_exhausted",
+        "gateway.no_reply_partial_stream_recovery",
+        "gateway.no_reply_fallback_prior_turn_content",
+        "gateway.no_reply_interrupted_during_api_call",
+        "gateway.no_reply_budget_exhausted",
+        "gateway.no_reply_ollama_context_too_small",
+        "gateway.no_reply_max_iterations_reached",
+        "gateway.no_reply_error_near_max_iterations",
+        "gateway.no_reply_pending_tool_result",
+    ]
+    for key in no_reply_keys:
+        result = i18n.t(key, lang="ru")
+        assert result.startswith("⚠️"), f"{key}: expected ⚠️ prefix, got: {result[:20]!r}"
+
+
+_RUN_AGENT_SRC = (Path(__file__).parents[2] / "run_agent.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("literal", [
+    '"⚠ Auxiliary ',
+    '"⚠️ File-mutation verifier: "',
+    '"⚠️ No reply: "',
+    'prefix = "⚠️ No reply: "',
+])
+def test_batchI_literal_not_unwrapped_in_run_agent(literal):
+    assert literal not in _RUN_AGENT_SRC, (
+        f"unwrapped English literal still present in run_agent.py: {literal!r}"
+    )

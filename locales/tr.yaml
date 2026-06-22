@@ -616,3 +616,22 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found:           "Oturum veritabanında bulunamadı."
     warn_passthrough:            "⚠️ {error}"
+# Auxiliary task failure warning (run_agent.py) — Batch I.
+  aux_task_failed:                 "⚠ Auxiliary {task} failed: {detail}"
+
+  # File-mutation verifier footer (run_agent.py) — Batch I.
+  file_mutation_header:            "⚠️ File-mutation verifier: {count} file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm."
+  file_mutation_bullet:            "  • `{path}` — [{tool}] {preview}"
+  file_mutation_more:              "  • … and {remaining} more"
+
+  # Turn-completion explainer (run_agent.py) — Batch I.
+  no_reply_empty_response_exhausted:     "⚠️ No reply: the model returned empty content after retries and any fallback providers. Try `continue`, switch model/provider, or inspect the tool output above."
+  no_reply_all_retries_exhausted:        "⚠️ No reply: all API retries were exhausted before a response was produced (provider errors / rate limits). Try `continue` or switch provider."
+  no_reply_partial_stream_recovery:      "⚠️ No reply: streaming stopped early and only a partial response was recovered. Send `continue` to resume from where it stopped."
+  no_reply_fallback_prior_turn_content:  "⚠️ No reply: no new content was produced this turn; showing recovered prior context. Send `continue` to retry."
+  no_reply_interrupted_during_api_call:  "⚠️ No reply: the request was interrupted mid-call before a reply was received. Send `continue` to retry."
+  no_reply_budget_exhausted:             "⚠️ No reply: the per-turn iteration/cost budget was exhausted before a final answer. Send `continue` to keep going."
+  no_reply_ollama_context_too_small:     "⚠️ No reply: the local model's context window was too small to finish. Increase the context size or use a larger model."
+  no_reply_max_iterations_reached:       "⚠️ No reply: the maximum tool-iteration limit was reached before a final answer. Send `continue` to keep going, or raise `max_iterations`."
+  no_reply_error_near_max_iterations:    "⚠️ No reply: an error occurred near the iteration limit before a final answer. Check the tool output above, then send `continue`."
+  no_reply_pending_tool_result:          "⚠️ No reply: the turn stopped while a tool result was still pending and the model produced no follow-up text. Send `continue` to let it summarize."
