@@ -1141,6 +1141,22 @@ def _build_child_agent(
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
+    # A profile's toolsets are bounded by the parent's (least privilege: a
+    # subagent must never gain a tool the parent lacks, or delegation becomes a
+    # sandbox-escape). Record what that bounding dropped so the narrowing is
+    # surfaced to the caller rather than the child silently running degraded.
+    profile_dropped_toolsets: List[str] = []
+    if profile_name and toolsets:
+        profile_dropped_toolsets = [t for t in toolsets if t not in child_toolsets]
+        if profile_dropped_toolsets:
+            logger.info(
+                "Profile '%s' delegation: toolset(s) %s dropped — not available "
+                "to the parent agent (subagents are bounded by the parent's "
+                "tool surface).",
+                profile_name,
+                ", ".join(profile_dropped_toolsets),
+            )
+
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
         goal,
@@ -1326,6 +1342,9 @@ def _build_child_agent(
     # Tag the child with the profile it impersonates (None for ordinary
     # subagents) so _run_single_child can surface it in the result metadata.
     child._delegate_profile = profile_name
+    # Profile toolsets the parent couldn't grant (see note above); surfaced in
+    # the result so a profile run is never silently tool-degraded.
+    child._delegate_profile_dropped_toolsets = profile_dropped_toolsets
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1541,17 +1560,19 @@ def _dump_subagent_timeout_diagnostic(
 # rollup) keeps working unchanged — only the child's identity differs.
 # (Issue #41889.)
 #
-# Resolving another profile's runtime is HERMES_HOME-scoped: config.yaml,
-# SOUL.md and auth.json live under the profile dir, and per-profile API keys
-# live in the profile's own .env (loaded into os.environ only at startup). We
-# therefore resolve under a scoped HERMES_HOME override (a contextvar — see
-# hermes_constants.set_hermes_home_override — which does NOT mutate os.environ)
-# plus a brief, lock-serialised load of the profile's .env, capturing static
-# credentials to hand to the child. Resolution runs on the main thread during
-# the sequential child-build phase, before any worker threads start, so the
-# transient .env load cannot race a concurrent batch task.
-
-_profile_resolve_lock = threading.Lock()
+# Resolving another profile's runtime is fully contextvar-scoped — nothing
+# process-wide is mutated:
+#   * config.yaml / SOUL.md / auth.json live under the profile dir, reached via
+#     a scoped HERMES_HOME override (hermes_constants.set_hermes_home_override).
+#   * Per-profile API keys live in the profile's own .env, loaded into an
+#     ISOLATED mapping and installed as the active secret scope
+#     (agent.secret_scope.set_secret_scope). resolve_runtime_provider reads
+#     every credential through get_secret, which honors that scope.
+# Both overrides are ContextVars, so concurrent resolutions on different
+# threads see only their own scope and an unrelated thread can never observe
+# another profile's credentials. This is the same scoped-secret mechanism the
+# gateway multiplexer relies on, so no os.environ mutation and no lock are
+# needed here.
 
 
 def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
@@ -1595,75 +1616,72 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
         set_hermes_home_override,
         reset_hermes_home_override,
     )
+    from agent.secret_scope import set_secret_scope, reset_secret_scope
     from hermes_cli.config import load_config
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     model = provider = base_url = api_key = api_mode = None
     toolsets: Optional[List[str]] = None
 
-    with _profile_resolve_lock:
-        # Load the profile's own .env over the current environ so credential
-        # resolution sees the profile's keys; remember prior values to restore.
-        prof_env: Dict[str, str] = {}
-        try:
-            from dotenv import dotenv_values
+    # Load the profile's .env into an isolated mapping (never os.environ); the
+    # set_secret_scope below makes it visible to credential resolution. See the
+    # module comment above for why this is contextvar-scoped, not process-wide.
+    prof_env: Dict[str, str] = {}
+    try:
+        from dotenv import dotenv_values
 
-            env_path = str(profile_dir / ".env")
-            # Windows editors may save .env as cp1252 — mirror the latin-1
-            # fallback in hermes_cli.env_loader (CONTRIBUTING.md cross-platform
-            # rule #4) so a non-UTF-8 profile .env doesn't silently yield no
-            # credentials.
-            try:
-                raw_env = dotenv_values(env_path, encoding="utf-8")
-            except UnicodeDecodeError:
-                raw_env = dotenv_values(env_path, encoding="latin-1")
-            prof_env = {k: v for k, v in raw_env.items() if v is not None}
+        env_path = str(profile_dir / ".env")
+        # Windows editors may save .env as cp1252 — mirror the latin-1
+        # fallback in hermes_cli.env_loader (CONTRIBUTING.md cross-platform
+        # rule #4) so a non-UTF-8 profile .env doesn't silently yield no
+        # credentials.
+        try:
+            raw_env = dotenv_values(env_path, encoding="utf-8")
+        except UnicodeDecodeError:
+            raw_env = dotenv_values(env_path, encoding="latin-1")
+        prof_env = {k: v for k, v in raw_env.items() if v is not None}
+    except Exception as exc:
+        logger.debug("Could not read .env for profile %s: %s", canon, exc)
+
+    home_token = set_hermes_home_override(str(profile_dir))
+    scope_token = set_secret_scope(prof_env)
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, str):
+            model = model_cfg
+        elif isinstance(model_cfg, dict):
+            model = model_cfg.get("default") or model_cfg.get("model")
+            provider = model_cfg.get("provider")
+        try:
+            runtime = resolve_runtime_provider(
+                requested=provider, target_model=model
+            )
         except Exception as exc:
-            logger.debug("Could not read .env for profile %s: %s", canon, exc)
-        saved_env = {k: os.environ.get(k) for k in prof_env}
-        os.environ.update(prof_env)
-        token = set_hermes_home_override(str(profile_dir))
+            raise ValueError(
+                f"Could not resolve runtime for profile '{canon}': {exc}. "
+                f"Check that the profile is configured "
+                f"(`hermes -p {canon} doctor`)."
+            ) from exc
+        base_url = runtime.get("base_url")
+        api_key = runtime.get("api_key")
+        api_mode = runtime.get("api_mode")
+        # Mirror _resolve_delegation_credentials: keep the configured
+        # provider label when the runtime collapses a named custom provider
+        # to "custom"; otherwise take the runtime's resolved provider.
+        if not (runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM and provider):
+            provider = runtime.get("provider") or provider
+        if not model:
+            model = runtime.get("model")
         try:
-            cfg = load_config()
-            model_cfg = cfg.get("model", {})
-            if isinstance(model_cfg, str):
-                model = model_cfg
-            elif isinstance(model_cfg, dict):
-                model = model_cfg.get("default") or model_cfg.get("model")
-                provider = model_cfg.get("provider")
-            try:
-                runtime = resolve_runtime_provider(
-                    requested=provider, target_model=model
-                )
-            except Exception as exc:
-                raise ValueError(
-                    f"Could not resolve runtime for profile '{canon}': {exc}. "
-                    f"Check that the profile is configured "
-                    f"(`hermes -p {canon} doctor`)."
-                ) from exc
-            base_url = runtime.get("base_url")
-            api_key = runtime.get("api_key")
-            api_mode = runtime.get("api_mode")
-            # Mirror _resolve_delegation_credentials: keep the configured
-            # provider label when the runtime collapses a named custom provider
-            # to "custom"; otherwise take the runtime's resolved provider.
-            if not (runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM and provider):
-                provider = runtime.get("provider") or provider
-            if not model:
-                model = runtime.get("model")
-            try:
-                from hermes_cli.tools_config import _get_platform_tools
+            from hermes_cli.tools_config import _get_platform_tools
 
-                toolsets = sorted(_get_platform_tools(cfg, "cli")) or None
-            except Exception as exc:
-                logger.debug("Could not resolve toolsets for %s: %s", canon, exc)
-        finally:
-            reset_hermes_home_override(token)
-            for k, v in saved_env.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+            toolsets = sorted(_get_platform_tools(cfg, "cli")) or None
+        except Exception as exc:
+            logger.debug("Could not resolve toolsets for %s: %s", canon, exc)
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
 
     return {
         "name": canon,
@@ -2058,6 +2076,10 @@ def _run_single_child(
         # string profile name (or None); the guard keeps mock children (tests)
         # from leaking an auto-created MagicMock attribute into the JSON entry.
         _profile = getattr(child, "_delegate_profile", None)
+        # Toolsets dropped by parent-bounding; list-guard keeps mock children
+        # from leaking a MagicMock into the JSON entry.
+        _dropped = getattr(child, "_delegate_profile_dropped_toolsets", None)
+        _dropped = _dropped if isinstance(_dropped, list) else []
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -2095,6 +2117,8 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        if isinstance(_profile, str) and _dropped:
+            entry["profile_toolsets_dropped"] = _dropped
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -2467,9 +2491,12 @@ def delegate_task(
             task_toolsets = t.get("toolsets") or toolsets
             profile_soul = None
             profile_name = None
-            if t.get("profile"):
+            # Per-task 'profile' wins; otherwise inherit the top-level one, so
+            # delegate_task(profile=..., tasks=[...]) applies it to every task.
+            task_profile = t.get("profile") or profile
+            if task_profile:
                 try:
-                    pb = _resolve_profile_bundle(t["profile"])
+                    pb = _resolve_profile_bundle(task_profile)
                 except ValueError as exc:
                     return tool_error(str(exc))
                 profile_name = pb["name"]
@@ -3204,10 +3231,16 @@ def _build_top_level_description() -> str:
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Pass 'profile' (top-level, or per-task in 'tasks') to run a subagent "
         "under a named Hermes profile's identity — its SOUL.md persona, "
-        "model/provider, credentials, and toolsets. Use it to call a specialist "
-        "profile for a bounded answer without Kanban. Works with "
-        "background=true and with batch fan-out (each task may name a different "
-        "profile). The profile must already exist.\n"
+        "model/provider, and credentials. The subagent also adopts the "
+        "profile's toolset preferences, bounded by your own available tool "
+        "surface (it never gains a tool you lack). It does NOT load the "
+        "profile's memory/session state — it is a focused, stateless subagent "
+        "with that profile's persona and runtime, not a full session of that "
+        "profile. Use it to call a specialist profile for a bounded answer "
+        "without Kanban. A top-level 'profile' applies to every batch task "
+        "unless that task sets its own 'profile'. Works with background=true "
+        "and with batch fan-out (each task may name a different profile). The "
+        "profile must already exist.\n"
         "- Results are always returned as an array, one entry per task."
     )
 
@@ -3323,15 +3356,22 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Run the subagent under a named Hermes profile's identity: "
-                    "its SOUL.md persona, model/provider config, credentials, "
-                    "and toolsets are loaded and the subagent runs as that "
-                    "specialist, returning its answer to you. Use it to call a "
-                    "specialist profile (e.g. profile='reader' or "
-                    "'security-reviewer') without going through Kanban. The "
-                    "profile must already exist (`hermes profile list`). Works "
-                    "with background=true and with the 'tasks' batch (each task "
-                    "may set its own 'profile'). When omitted, the subagent "
-                    "runs under your own profile as usual."
+                    "its SOUL.md persona and model/provider config + "
+                    "credentials are loaded and the subagent runs as that "
+                    "specialist, returning its answer to you. The subagent "
+                    "also adopts the profile's toolset preferences, bounded by "
+                    "your own available tools (it never gains a tool you "
+                    "lack). It does NOT load the profile's memory/session "
+                    "state — it is a focused, stateless subagent with that "
+                    "profile's persona and runtime, not a full session of that "
+                    "profile. Use it to call a specialist profile (e.g. "
+                    "profile='reader' or 'security-reviewer') without going "
+                    "through Kanban. The profile must already exist (`hermes "
+                    "profile list`). Works with background=true and with the "
+                    "'tasks' batch: a top-level 'profile' applies to every "
+                    "task unless that task sets its own 'profile'. When "
+                    "omitted, the subagent runs under your own profile as "
+                    "usual."
                 ),
             },
             "toolsets": {

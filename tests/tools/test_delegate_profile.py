@@ -114,6 +114,56 @@ class TestResolveProfileBundle(unittest.TestCase):
         self.assertEqual(bundle["base_url"], "https://prov/v1")
         self.assertEqual(sorted(bundle["toolsets"]), ["file", "web"])
 
+    def test_env_scoped_without_mutating_os_environ(self):
+        # Regression guard for the in-process concurrency concern: the
+        # profile's .env must reach credential resolution via the secret scope
+        # (a contextvar), NOT by mutating os.environ. We assert that during
+        # resolve_runtime_provider the profile key is visible through
+        # get_secret while os.environ stays untouched.
+        import os
+        import tempfile
+        from pathlib import Path
+        from agent.secret_scope import get_secret
+
+        seen = {}
+        before = dict(os.environ)
+
+        def _capture(*_a, **_k):
+            seen["scope_value"] = get_secret("PROFILE_ONLY_KEY")
+            seen["os_environ_value"] = os.environ.get("PROFILE_ONLY_KEY")
+            return {
+                "provider": "prov",
+                "base_url": "u",
+                "api_key": "k",
+                "api_mode": "chat_completions",
+            }
+
+        with tempfile.TemporaryDirectory() as td:
+            prof_dir = Path(td)
+            (prof_dir / ".env").write_text(
+                "PROFILE_ONLY_KEY=secret-from-profile\n", encoding="utf-8"
+            )
+            with patch(
+                "hermes_cli.profiles.profile_exists", return_value=True
+            ), patch(
+                "hermes_cli.profiles.get_profile_dir", return_value=prof_dir
+            ), patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"default": "m", "provider": "prov"}},
+            ), patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                side_effect=_capture,
+            ), patch(
+                "hermes_cli.tools_config._get_platform_tools", return_value=set()
+            ):
+                _resolve_profile_bundle("reader")
+
+        # The credential was visible through the scope during resolution …
+        self.assertEqual(seen["scope_value"], "secret-from-profile")
+        # … but never leaked into os.environ, and os.environ is unchanged after.
+        self.assertIsNone(seen["os_environ_value"])
+        self.assertEqual(dict(os.environ), before)
+
 
 class TestDelegateTaskProfileRouting(unittest.TestCase):
     def setUp(self):
@@ -156,6 +206,67 @@ class TestDelegateTaskProfileRouting(unittest.TestCase):
         self.assertEqual(kwargs["profile_soul"], "Reader persona")
         self.assertEqual(kwargs["profile_name"], "reader")
 
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_profile_bundle")
+    def test_top_level_profile_inherited_by_batch_tasks(self, mbundle, mbuild, mrun):
+        # delegate_task(profile="reader", tasks=[{...}, {...}]) must apply
+        # "reader" to EACH batch item that doesn't override it. Regression
+        # guard for the top-level-profile + batch inheritance mismatch.
+        mbundle.return_value = {
+            "name": "reader",
+            "soul": "Reader persona",
+            "model": "prof/model",
+            "provider": "prov",
+            "base_url": "u",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+            "toolsets": None,
+        }
+        fake_child = MagicMock()
+        fake_child.model = "prof/model"
+        mbuild.return_value = fake_child
+        mrun.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+        delegate_task(
+            profile="reader",
+            tasks=[{"goal": "a"}, {"goal": "b"}],
+            parent_agent=self.parent,
+        )
+        # The profile was resolved once per batch task (inherited by both).
+        resolved = [c.args[0] for c in mbundle.call_args_list]
+        self.assertEqual(resolved, ["reader", "reader"])
+        # Every child was built with the profile's soul + name.
+        for call in mbuild.call_args_list:
+            self.assertEqual(call.kwargs["profile_name"], "reader")
+            self.assertEqual(call.kwargs["profile_soul"], "Reader persona")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_profile_bundle")
+    def test_per_task_profile_overrides_top_level(self, mbundle, mbuild, mrun):
+        # A task's own 'profile' wins over the inherited top-level one.
+        mbundle.side_effect = lambda name: {
+            "name": name,
+            "soul": f"{name} persona",
+            "model": "m",
+            "provider": "p",
+            "base_url": "u",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+            "toolsets": None,
+        }
+        fake_child = MagicMock()
+        fake_child.model = "m"
+        mbuild.return_value = fake_child
+        mrun.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+        delegate_task(
+            profile="reader",
+            tasks=[{"goal": "a"}, {"goal": "b", "profile": "writer"}],
+            parent_agent=self.parent,
+        )
+        resolved = [c.args[0] for c in mbundle.call_args_list]
+        self.assertEqual(resolved, ["reader", "writer"])
+
     @patch(
         "tools.delegate_tool._resolve_profile_bundle",
         side_effect=ValueError("Profile 'ghost' does not exist."),
@@ -194,6 +305,73 @@ class TestDelegateTaskProfileRouting(unittest.TestCase):
         # Crucially NOT a rejection that background can't be combined with profile.
         self.assertNotIn("cannot be combined", json.dumps(data))
         self.assertEqual(data.get("status"), "dispatched")
+
+
+class TestProfileToolsetBounding(unittest.TestCase):
+    """A profile's toolset preferences are bounded by the parent's tools
+    (least privilege), but the narrowing must not be silent: tools the parent
+    can't grant are recorded on the child and surfaced in the result.
+    """
+
+    def _parent(self, enabled):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            enabled_toolsets=list(enabled),
+            api_key="k", base_url="u", provider="p", api_mode="chat_completions",
+            model="m", platform="cli", providers_allowed=None,
+            providers_ignored=None, providers_order=None, provider_sort=None,
+            _session_db=None, _delegate_depth=0, _active_children=[],
+            _active_children_lock=threading.Lock(), _print_fn=None,
+            tool_progress_callback=None, thinking_callback=None,
+            _delegate_spinner=None, _memory_manager=None, session_id="s",
+            _current_turn_id="", session_estimated_cost_usd=0.0,
+            valid_tool_names=[],
+        )
+
+    def test_dropped_profile_toolsets_recorded(self):
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()):
+            # Parent lacks 'web'; profile wants web+file → web is dropped.
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None,
+                toolsets=["web", "file"], model="m", max_iterations=3,
+                task_count=1, parent_agent=self._parent(["file", "terminal"]),
+                profile_soul="persona", profile_name="reader",
+            )
+        self.assertEqual(
+            getattr(child, "_delegate_profile_dropped_toolsets"), ["web"]
+        )
+
+    def test_no_drop_when_parent_has_all_profile_tools(self):
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()):
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None,
+                toolsets=["web", "file"], model="m", max_iterations=3,
+                task_count=1,
+                parent_agent=self._parent(["file", "web", "terminal"]),
+                profile_soul="persona", profile_name="reader",
+            )
+        self.assertEqual(
+            getattr(child, "_delegate_profile_dropped_toolsets"), []
+        )
+
+    def test_no_drop_field_for_non_profile_child(self):
+        # Ordinary (non-profile) subagents never get a dropped-toolset list.
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()):
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None,
+                toolsets=["web"], model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(["file"]),
+            )
+        self.assertEqual(
+            getattr(child, "_delegate_profile_dropped_toolsets"), []
+        )
 
 
 class TestAgentDispatchForwardsProfile(unittest.TestCase):
