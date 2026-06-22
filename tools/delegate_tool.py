@@ -1062,6 +1062,10 @@ def _build_child_agent(
     # toolsets arrive via the existing model + override_* + toolsets params.
     profile_soul: Optional[str] = None,
     profile_name: Optional[str] = None,
+    # Profile dir → child's HERMES_HOME for memory init, so a profile-backed
+    # child loads THAT profile's memory (built-in store + provider) under its
+    # identity. None for ordinary subagents (which stay memory-less).
+    profile_home: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1317,7 +1321,10 @@ def _build_child_agent(
         log_prefix=f"[subagent-{task_index}]",
         platform="subagent",
         skip_context_files=True,
-        skip_memory=True,
+        # Profile-backed children load the target profile's memory (scoped to
+        # profile_home); ordinary subagents stay memory-less as before.
+        skip_memory=(profile_home is None),
+        profile_home=profile_home,
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
@@ -1692,6 +1699,8 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
         "api_key": api_key,
         "api_mode": api_mode,
         "toolsets": toolsets,
+        # Absolute profile dir → child's HERMES_HOME for profile memory load.
+        "profile_home": str(profile_dir),
     }
 
 
@@ -2491,6 +2500,7 @@ def delegate_task(
             task_toolsets = t.get("toolsets") or toolsets
             profile_soul = None
             profile_name = None
+            profile_home = None
             # Per-task 'profile' wins; otherwise inherit the top-level one, so
             # delegate_task(profile=..., tasks=[...]) applies it to every task.
             task_profile = t.get("profile") or profile
@@ -2501,6 +2511,7 @@ def delegate_task(
                     return tool_error(str(exc))
                 profile_name = pb["name"]
                 profile_soul = pb["soul"]
+                profile_home = pb.get("profile_home")
                 task_model = pb["model"] or task_model
                 task_provider = pb["provider"]
                 task_base_url = pb["base_url"]
@@ -2537,6 +2548,7 @@ def delegate_task(
                 role=effective_role,
                 profile_soul=profile_soul,
                 profile_name=profile_name,
+                profile_home=profile_home,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3233,10 +3245,10 @@ def _build_top_level_description() -> str:
         "under a named Hermes profile's identity — its SOUL.md persona, "
         "model/provider, and credentials. The subagent also adopts the "
         "profile's toolset preferences, bounded by your own available tool "
-        "surface (it never gains a tool you lack). It does NOT load the "
-        "profile's memory/session state — it is a focused, stateless subagent "
-        "with that profile's persona and runtime, not a full session of that "
-        "profile. Use it to call a specialist profile for a bounded answer "
+        "surface (it never gains a tool you lack), and loads the profile's own "
+        "memory (built-in store + memory provider) under that profile's "
+        "identity, so it runs with that profile's accumulated knowledge. Use "
+        "it to call a specialist profile for a bounded answer "
         "without Kanban. A top-level 'profile' applies to every batch task "
         "unless that task sets its own 'profile'. Works with background=true "
         "and with batch fan-out (each task may name a different profile). The "
@@ -3361,10 +3373,10 @@ DELEGATE_TASK_SCHEMA = {
                     "specialist, returning its answer to you. The subagent "
                     "also adopts the profile's toolset preferences, bounded by "
                     "your own available tools (it never gains a tool you "
-                    "lack). It does NOT load the profile's memory/session "
-                    "state — it is a focused, stateless subagent with that "
-                    "profile's persona and runtime, not a full session of that "
-                    "profile. Use it to call a specialist profile (e.g. "
+                    "lack), and loads that profile's own memory (built-in "
+                    "store + memory provider) under the profile's identity, so "
+                    "it runs with the profile's accumulated knowledge. Use it "
+                    "to call a specialist profile (e.g. "
                     "profile='reader' or 'security-reviewer') without going "
                     "through Kanban. The profile must already exist (`hermes "
                     "profile list`). Works with background=true and with the "

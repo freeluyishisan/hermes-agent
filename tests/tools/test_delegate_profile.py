@@ -374,6 +374,80 @@ class TestProfileToolsetBounding(unittest.TestCase):
         )
 
 
+class TestProfileMemoryWiring(unittest.TestCase):
+    """A profile-backed child loads the target profile's memory: it is built
+    with skip_memory=False and profile_home pointing at the profile dir.
+    Ordinary subagents stay memory-less (skip_memory=True, profile_home=None).
+    """
+
+    def _parent(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            enabled_toolsets=["file", "web"],
+            api_key="k", base_url="u", provider="p", api_mode="chat_completions",
+            model="m", platform="cli", providers_allowed=None,
+            providers_ignored=None, providers_order=None, provider_sort=None,
+            _session_db=None, _delegate_depth=0, _active_children=[],
+            _active_children_lock=threading.Lock(), _print_fn=None,
+            tool_progress_callback=None, thinking_callback=None,
+            _delegate_spinner=None, _memory_manager=None, session_id="s",
+            _current_turn_id="", session_estimated_cost_usd=0.0,
+            valid_tool_names=[],
+        )
+
+    def test_profile_child_loads_profile_memory(self):
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(), profile_soul="persona",
+                profile_name="reader", profile_home="/home/x/.hermes/profiles/reader",
+            )
+        kw = MA.call_args.kwargs
+        self.assertFalse(kw["skip_memory"])
+        self.assertEqual(kw["profile_home"], "/home/x/.hermes/profiles/reader")
+
+    def test_ordinary_child_stays_memoryless(self):
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(),
+            )
+        kw = MA.call_args.kwargs
+        self.assertTrue(kw["skip_memory"])
+        self.assertIsNone(kw["profile_home"])
+
+    def test_bundle_carries_profile_home(self):
+        # _resolve_profile_bundle must expose the profile dir as profile_home.
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            prof = Path(td)
+            with patch(
+                "hermes_cli.profiles.profile_exists", return_value=True
+            ), patch(
+                "hermes_cli.profiles.get_profile_dir", return_value=prof
+            ), patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"default": "m", "provider": "p"}},
+            ), patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={"provider": "p", "base_url": "u", "api_key": "k",
+                              "api_mode": "chat_completions"},
+            ), patch(
+                "hermes_cli.tools_config._get_platform_tools", return_value=set()
+            ):
+                bundle = _resolve_profile_bundle("reader")
+        self.assertEqual(bundle["profile_home"], str(prof))
+
+
 class TestAgentDispatchForwardsProfile(unittest.TestCase):
     """Guard the second invocation path: the agent loop dispatches delegate_task
     via AIAgent._dispatch_delegate_task (run_agent.py), NOT the registry handler.
