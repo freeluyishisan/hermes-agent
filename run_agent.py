@@ -5274,6 +5274,7 @@ class AIAgent:
             role=function_args.get("role"),
             background=(not _is_subagent),
             profile=function_args.get("profile"),
+            profile_memory=function_args.get("profile_memory"),
             parent_agent=self,
         )
 

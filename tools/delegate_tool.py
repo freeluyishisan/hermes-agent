@@ -537,6 +537,54 @@ def _get_orchestrator_enabled() -> bool:
     return True
 
 
+def _get_profile_memory_writeback() -> bool:
+    """Operator default for profile-backed memory write-back (phase 2).
+
+    A profile-backed subagent reads the target profile's memory always; whether
+    it may also WRITE back to that profile's long-term memory is opt-in. The
+    per-call `profile_memory` argument wins when set; this config value
+    (delegation.profile_memory_writeback, env DELEGATION_PROFILE_MEMORY_WRITEBACK)
+    is the default when the caller leaves it unset, and itself defaults to
+    False — read-only — so a bounded delegation can't silently pollute a
+    specialist profile's accumulated knowledge with one-off task residue.
+    """
+    cfg = _load_config()
+    if "profile_memory_writeback" in cfg:
+        return is_truthy_value(cfg.get("profile_memory_writeback"), default=False)
+    env_val = os.getenv("DELEGATION_PROFILE_MEMORY_WRITEBACK")
+    if env_val is not None:
+        return is_truthy_value(env_val, default=False)
+    return False
+
+
+def _coerce_profile_memory(value: Any) -> Optional[bool]:
+    """Normalise a caller's `profile_memory` choice to a write-back boolean.
+
+    Returns ``True`` (write-back), ``False`` (read-only), or ``None`` when the
+    caller left it unset OR passed an unrecognised value — in which case the
+    resolution falls through to ``_get_profile_memory_writeback()`` so behaviour
+    stays predictable (same silent-degrade contract as ``_normalize_role``).
+    Accepts the schema enum ("read"/"write") plus common synonyms and bools so
+    a model that emits ``true``/``"readwrite"`` still does the obvious thing.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s in {"write", "writeback", "write-back", "rw", "readwrite", "read-write", "true", "1", "yes", "on"}:
+        return True
+    if s in {"read", "readonly", "read-only", "ro", "false", "0", "no", "off"}:
+        return False
+    logger.warning(
+        "Unknown delegate_task profile_memory=%r, ignoring (defaulting to "
+        "delegation.profile_memory_writeback)", value,
+    )
+    return None
+
+
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
@@ -1066,6 +1114,12 @@ def _build_child_agent(
     # child loads THAT profile's memory (built-in store + provider) under its
     # identity. None for ordinary subagents (which stay memory-less).
     profile_home: Optional[str] = None,
+    # Phase 2: opt-in write-back for profile memory. When False (default) a
+    # profile-backed child READS the profile's memory but never writes it back;
+    # when True it may update the profile's own long-term memory (built-in store
+    # + provider), and the otherwise-stripped `memory` tool is granted so the
+    # writable store is actually reachable. No effect without profile_home.
+    profile_memory_writeback: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1144,6 +1198,18 @@ def _build_child_agent(
     # test_intersection_preserves_delegation_bound test for the design rationale.
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
+
+    # Write-back profile child: re-add the `memory` toolset that
+    # _strip_blocked_tools removed for every subagent. The blanket strip exists
+    # so an ordinary subagent can't write the PARENT's shared MEMORY.md; here
+    # the child's store is bound to the TARGET profile's own memories dir (see
+    # agent_init), so granting the memory tool lets it update that profile's
+    # long-term memory — and nothing else. Like the orchestrator 'delegation'
+    # re-add, this is granted by capability (write-back + profile), not
+    # inherited from the parent's toolset, so it's unconditional on membership.
+    profile_memory_writeback = bool(profile_home) and profile_memory_writeback
+    if profile_memory_writeback and "memory" not in child_toolsets:
+        child_toolsets.append("memory")
 
     # A profile's toolsets are bounded by the parent's (least privilege: a
     # subagent must never gain a tool the parent lacks, or delegation becomes a
@@ -1325,10 +1391,12 @@ def _build_child_agent(
         # profile_home); ordinary subagents stay memory-less as before.
         skip_memory=(profile_home is None),
         profile_home=profile_home,
-        # Phase 1: a profile-backed child READS the profile's memory but never
-        # writes it back, so a bounded delegation can't pollute a specialist
-        # profile's long-term memory. (Write-back is a deliberate follow-up.)
-        profile_memory_readonly=(profile_home is not None),
+        # A profile-backed child READS the profile's memory by default and only
+        # WRITES back when write-back was explicitly opted in (per-call
+        # profile_memory='write' or delegation.profile_memory_writeback). The
+        # default stays read-only so a bounded delegation can't pollute a
+        # specialist profile's long-term memory with one-off task residue.
+        profile_memory_readonly=(profile_home is not None and not profile_memory_writeback),
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
@@ -1353,6 +1421,10 @@ def _build_child_agent(
     # Tag the child with the profile it impersonates (None for ordinary
     # subagents) so _run_single_child can surface it in the result metadata.
     child._delegate_profile = profile_name
+    # Whether this profile run may write back to the profile's memory (phase 2).
+    # Surfaced in the result so the caller can see read-only vs write-back at a
+    # glance. Always False for ordinary (non-profile) subagents.
+    child._delegate_profile_writeback = profile_memory_writeback
     # Profile toolsets the parent couldn't grant (see note above); surfaced in
     # the result so a profile run is never silently tool-degraded.
     child._delegate_profile_dropped_toolsets = profile_dropped_toolsets
@@ -2099,10 +2171,21 @@ def _run_single_child(
         # from leaking a MagicMock into the JSON entry.
         _dropped = getattr(child, "_delegate_profile_dropped_toolsets", None)
         _dropped = _dropped if isinstance(_dropped, list) else []
+        # Whether the profile run wrote back to the profile's memory (phase 2).
+        # bool-guard keeps mock children from leaking a MagicMock into the JSON.
+        _writeback = getattr(child, "_delegate_profile_writeback", False)
+        _writeback = bool(_writeback) if isinstance(_writeback, bool) else False
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "profile": _profile if isinstance(_profile, str) else None,
+            # Only meaningful for a profile run; "write" when write-back was
+            # opted in, else "read". None for ordinary (non-profile) subagents.
+            "profile_memory": (
+                ("write" if _writeback else "read")
+                if isinstance(_profile, str)
+                else None
+            ),
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
@@ -2348,6 +2431,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     profile: Optional[str] = None,
+    profile_memory: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2455,6 +2539,7 @@ def delegate_task(
                 "toolsets": toolsets,
                 "role": top_role,
                 "profile": profile,
+                "profile_memory": profile_memory,
             }
         ]
     else:
@@ -2511,6 +2596,7 @@ def delegate_task(
             profile_soul = None
             profile_name = None
             profile_home = None
+            profile_memory_writeback = False
             # Per-task 'profile' wins; otherwise inherit the top-level one, so
             # delegate_task(profile=..., tasks=[...]) applies it to every task.
             task_profile = t.get("profile") or profile
@@ -2533,6 +2619,16 @@ def delegate_task(
                 # parent lacks.)
                 if not (t.get("toolsets") or toolsets):
                     task_toolsets = pb["toolsets"]
+                # Resolve write-back: per-task 'profile_memory' wins, else the
+                # top-level one, else the operator default. Read-only unless
+                # explicitly opted in (see _get_profile_memory_writeback).
+                _pm_choice = _coerce_profile_memory(t.get("profile_memory"))
+                if _pm_choice is None:
+                    _pm_choice = _coerce_profile_memory(profile_memory)
+                profile_memory_writeback = (
+                    _pm_choice if _pm_choice is not None
+                    else _get_profile_memory_writeback()
+                )
 
             child = _build_child_agent(
                 task_index=i,
@@ -2559,6 +2655,7 @@ def delegate_task(
                 profile_soul=profile_soul,
                 profile_name=profile_name,
                 profile_home=profile_home,
+                profile_memory_writeback=profile_memory_writeback,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3257,8 +3354,11 @@ def _build_top_level_description() -> str:
         "profile's toolset preferences, bounded by your own available tool "
         "surface (it never gains a tool you lack), and reads the profile's own "
         "memory (built-in store + memory provider) under that profile's "
-        "identity — read-only, so it runs with that profile's accumulated "
-        "knowledge without modifying it. Use "
+        "identity, so it runs with that profile's accumulated knowledge. By "
+        "default it does NOT modify that memory (read-only); pass "
+        "profile_memory='write' to let it write back to the profile's own "
+        "long-term memory when the task is meant to teach the profile "
+        "something durable. Use "
         "it to call a specialist profile for a bounded answer "
         "without Kanban. A top-level 'profile' applies to every batch task "
         "unless that task sets its own 'profile'. Works with background=true "
@@ -3386,8 +3486,8 @@ DELEGATE_TASK_SCHEMA = {
                     "your own available tools (it never gains a tool you "
                     "lack), and reads that profile's own memory (built-in "
                     "store + memory provider) under the profile's identity "
-                    "(read-only — the profile's accumulated knowledge is used "
-                    "but not modified). Use it "
+                    "(read-only by default — set profile_memory='write' to "
+                    "allow write-back to the profile's memory). Use it "
                     "to call a specialist profile (e.g. "
                     "profile='reader' or 'security-reviewer') without going "
                     "through Kanban. The profile must already exist (`hermes "
@@ -3396,6 +3496,25 @@ DELEGATE_TASK_SCHEMA = {
                     "task unless that task sets its own 'profile'. When "
                     "omitted, the subagent runs under your own profile as "
                     "usual."
+                ),
+            },
+            "profile_memory": {
+                "type": "string",
+                "enum": ["read", "write"],
+                "description": (
+                    "Whether a profile-backed subagent may WRITE BACK to the "
+                    "profile's long-term memory. 'read' (default) = the "
+                    "subagent reads the profile's accumulated knowledge but "
+                    "leaves it untouched, so a one-off delegation can't pollute "
+                    "a specialist's memory. 'write' = the subagent may update "
+                    "the profile's own memory (built-in MEMORY.md/USER.md store "
+                    "+ memory provider, scoped to that profile) — use this only "
+                    "when the task is explicitly about teaching the profile "
+                    "something durable. Only meaningful together with "
+                    "'profile'; ignored otherwise. Applies to every batch task "
+                    "unless the task sets its own 'profile_memory'. The "
+                    "operator default lives in "
+                    "delegation.profile_memory_writeback (read-only)."
                 ),
             },
             "toolsets": {
@@ -3450,6 +3569,16 @@ DELEGATE_TASK_SCHEMA = {
                                 "subagent under the named profile (loads its "
                                 "SOUL.md, model, credentials, toolsets). See "
                                 "the top-level 'profile' parameter."
+                            ),
+                        },
+                        "profile_memory": {
+                            "type": "string",
+                            "enum": ["read", "write"],
+                            "description": (
+                                "Per-task profile-memory mode override. 'read' "
+                                "(default) or 'write' to let this task's "
+                                "subagent write back to its profile's memory. "
+                                "See the top-level 'profile_memory' parameter."
                             ),
                         },
                     },
@@ -3540,6 +3669,7 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         profile=args.get("profile"),
+        profile_memory=args.get("profile_memory"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

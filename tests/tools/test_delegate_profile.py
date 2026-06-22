@@ -18,6 +18,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _build_child_system_prompt,
     _build_top_level_description,
+    _coerce_profile_memory,
     _resolve_profile_bundle,
     delegate_task,
 )
@@ -64,6 +65,18 @@ class TestProfileSchema(unittest.TestCase):
 
     def test_description_mentions_profile(self):
         self.assertIn("profile", _build_top_level_description().lower())
+
+    def test_top_level_profile_memory_property(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("profile_memory", props)
+        self.assertEqual(props["profile_memory"]["enum"], ["read", "write"])
+
+    def test_per_task_profile_memory_property(self):
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"][
+            "items"
+        ]["properties"]
+        self.assertIn("profile_memory", task_props)
+        self.assertEqual(task_props["profile_memory"]["enum"], ["read", "write"])
 
 
 class TestSoulInjection(unittest.TestCase):
@@ -523,6 +536,177 @@ class TestAgentDispatchForwardsProfile(unittest.TestCase):
 
         self.assertEqual(captured.get("profile"), "reader")
         self.assertIn("parent_agent", captured)
+
+    def test_dispatch_delegate_task_forwards_profile_memory(self):
+        # The write-back opt-in must reach delegate_task through the live agent
+        # dispatch path too, not just the registry handler.
+        import run_agent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                object(), {"profile": "reader", "profile_memory": "write", "goal": "g"}
+            )
+
+        self.assertEqual(captured.get("profile_memory"), "write")
+
+
+class TestCoerceProfileMemory(unittest.TestCase):
+    """`profile_memory` normalisation: enum + synonyms + bools, with an
+    unset/unknown sentinel so resolution can fall through to the config default.
+    """
+
+    def test_write_synonyms(self):
+        for v in ("write", "Write", "writeback", "rw", "readwrite", "true", True, "1"):
+            self.assertIs(_coerce_profile_memory(v), True, v)
+
+    def test_read_synonyms(self):
+        for v in ("read", "READ", "readonly", "ro", "false", False, "0"):
+            self.assertIs(_coerce_profile_memory(v), False, v)
+
+    def test_unset_and_unknown_return_none(self):
+        # None (unset) and unrecognised strings both fall through to the default.
+        self.assertIsNone(_coerce_profile_memory(None))
+        self.assertIsNone(_coerce_profile_memory(""))
+        self.assertIsNone(_coerce_profile_memory("banana"))
+
+
+class TestProfileMemoryWriteback(unittest.TestCase):
+    """Phase-2 write-back wiring in _build_child_agent: the opt-in flips the
+    child out of read-only AND grants the otherwise-stripped `memory` tool so
+    the writable, profile-bound store is actually reachable. Read-only stays
+    the default, and ordinary (non-profile) subagents are never affected.
+    """
+
+    def _parent(self, enabled=("file", "web", "memory")):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            enabled_toolsets=list(enabled),
+            api_key="k", base_url="u", provider="p", api_mode="chat_completions",
+            model="m", platform="cli", providers_allowed=None,
+            providers_ignored=None, providers_order=None, provider_sort=None,
+            _session_db=None, _delegate_depth=0, _active_children=[],
+            _active_children_lock=threading.Lock(), _print_fn=None,
+            tool_progress_callback=None, thinking_callback=None,
+            _delegate_spinner=None, _memory_manager=None, session_id="s",
+            _current_turn_id="", session_estimated_cost_usd=0.0,
+            valid_tool_names=[],
+        )
+
+    def _build(self, **over):
+        from tools.delegate_tool import _build_child_agent
+
+        kwargs = dict(
+            task_index=0, goal="g", context=None, toolsets=["file"],
+            model="m", max_iterations=3, task_count=1,
+            parent_agent=self._parent(), profile_soul="persona",
+            profile_name="reader", profile_home="/h/.hermes/profiles/reader",
+        )
+        kwargs.update(over)
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            child = _build_child_agent(**kwargs)
+        return MA.call_args.kwargs, child
+
+    def test_writeback_disables_readonly_and_grants_memory_tool(self):
+        kw, child = self._build(profile_memory_writeback=True)
+        self.assertFalse(kw["profile_memory_readonly"])
+        self.assertIn("memory", kw["enabled_toolsets"])
+        self.assertTrue(getattr(child, "_delegate_profile_writeback"))
+
+    def test_default_is_readonly_without_memory_tool(self):
+        kw, child = self._build()  # writeback defaults to False
+        self.assertTrue(kw["profile_memory_readonly"])
+        self.assertNotIn("memory", kw["enabled_toolsets"])
+        self.assertFalse(getattr(child, "_delegate_profile_writeback"))
+
+    def test_writeback_ignored_without_profile(self):
+        # No profile_home → write-back is meaningless: never readonly-flips a
+        # memoryless child, never grants the memory tool, stays not-writeback.
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(), profile_memory_writeback=True,
+            )
+        kw = MA.call_args.kwargs
+        self.assertFalse(kw["profile_memory_readonly"])  # readonly only with profile_home
+        self.assertNotIn("memory", kw["enabled_toolsets"])
+        self.assertFalse(getattr(child, "_delegate_profile_writeback"))
+
+
+class TestDelegateTaskWritebackResolution(unittest.TestCase):
+    """delegate_task resolves the write-back opt-in with the documented
+    precedence (per-task > top-level > config default) and forwards it to
+    _build_child_agent.
+    """
+
+    def setUp(self):
+        self.parent = _make_mock_parent()
+        self._bundle = {
+            "name": "reader", "soul": "Reader", "model": "m", "provider": "p",
+            "base_url": "u", "api_key": "k", "api_mode": "chat_completions",
+            "toolsets": None,
+        }
+
+    def _run(self, **dt):
+        with patch("tools.delegate_tool._run_single_child") as mrun, patch(
+            "tools.delegate_tool._build_child_agent"
+        ) as mbuild, patch(
+            "tools.delegate_tool._resolve_profile_bundle", return_value=self._bundle
+        ), patch(
+            "tools.delegate_tool._get_profile_memory_writeback", return_value=False
+        ):
+            fake_child = MagicMock()
+            fake_child.model = "m"
+            mbuild.return_value = fake_child
+            mrun.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+            delegate_task(parent_agent=self.parent, **dt)
+        return mbuild
+
+    def test_top_level_write_applies_to_batch(self):
+        mbuild = self._run(
+            profile="reader", profile_memory="write",
+            tasks=[{"goal": "a"}, {"goal": "b"}],
+        )
+        for call in mbuild.call_args_list:
+            self.assertTrue(call.kwargs["profile_memory_writeback"])
+
+    def test_per_task_overrides_top_level(self):
+        mbuild = self._run(
+            profile="reader", profile_memory="write",
+            tasks=[{"goal": "a"}, {"goal": "b", "profile_memory": "read"}],
+        )
+        calls = mbuild.call_args_list
+        self.assertTrue(calls[0].kwargs["profile_memory_writeback"])
+        self.assertFalse(calls[1].kwargs["profile_memory_writeback"])
+
+    def test_unset_falls_back_to_config_default(self):
+        # No profile_memory given → uses _get_profile_memory_writeback (False here).
+        mbuild = self._run(goal="g", profile="reader")
+        self.assertFalse(mbuild.call_args.kwargs["profile_memory_writeback"])
+
+    def test_unset_honors_config_default_true(self):
+        with patch("tools.delegate_tool._run_single_child") as mrun, patch(
+            "tools.delegate_tool._build_child_agent"
+        ) as mbuild, patch(
+            "tools.delegate_tool._resolve_profile_bundle", return_value=self._bundle
+        ), patch(
+            "tools.delegate_tool._get_profile_memory_writeback", return_value=True
+        ):
+            fake_child = MagicMock()
+            fake_child.model = "m"
+            mbuild.return_value = fake_child
+            mrun.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+            delegate_task(goal="g", profile="reader", parent_agent=self.parent)
+        self.assertTrue(mbuild.call_args.kwargs["profile_memory_writeback"])
 
 
 if __name__ == "__main__":
