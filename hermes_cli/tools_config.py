@@ -24,6 +24,7 @@ from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
@@ -610,7 +611,7 @@ def _pip_install(
             result = subprocess.run(
                 [uv_bin, "pip", "install", *args],
                 capture_output=capture_output, text=True, timeout=timeout,
-                env=uv_env,
+                env=uv_env, creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 return result
@@ -625,6 +626,7 @@ def _pip_install(
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            creationflags=windows_hide_flags(),
         )
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
@@ -633,6 +635,7 @@ def _pip_install(
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                creationflags=windows_hide_flags(),
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             # Synthesize a result so callers see a clean failure path.
@@ -644,6 +647,7 @@ def _pip_install(
     return subprocess.run(
         pip_cmd + ["install", *args],
         capture_output=capture_output, text=True, timeout=timeout,
+        creationflags=windows_hide_flags(),
     )
 
 
@@ -744,6 +748,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             version = subprocess.run(
                 [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=windows_hide_flags(),
             ).stdout.strip()
             _print_success(f"    {driver_cmd} already installed: {version or 'unknown version'}")
         except Exception:
@@ -767,6 +772,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             before = subprocess.run(
                 [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=windows_hide_flags(),
             ).stdout.strip()
         except Exception:
             before = ""
@@ -779,6 +785,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             after = subprocess.run(
                 [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=windows_hide_flags(),
             ).stdout.strip()
             if after and after != before:
                 _print_success(f"    {driver_cmd} upgraded: {before} → {after}")
@@ -809,7 +816,8 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        result = subprocess.run(install_cmd, shell=True, timeout=300,
+                                creationflags=windows_hide_flags())
         if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
@@ -849,7 +857,8 @@ def _run_post_setup(post_setup_key: str):
                 # only, avoiding the apps/* glob which would pull in
                 # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
                 [npm_bin, "install", "--silent", "--workspaces=false"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
@@ -925,6 +934,7 @@ def _run_post_setup(post_setup_key: str):
             result = subprocess.run(
                 install_cmd,
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 _print_success("    Chromium installed")
@@ -955,7 +965,8 @@ def _run_post_setup(post_setup_key: str):
             result = subprocess.run(
                 # --workspaces=false avoids resolving apps/desktop. See #38772.
                 [_npm_bin, "install", "--silent", "--workspaces=false"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")
