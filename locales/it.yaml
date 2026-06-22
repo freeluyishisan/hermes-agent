@@ -635,3 +635,23 @@ Future messages in this room will use that transcript until `/reset` or another 
   no_reply_max_iterations_reached:       "⚠️ No reply: the maximum tool-iteration limit was reached before a final answer. Send `continue` to keep going, or raise `max_iterations`."
   no_reply_error_near_max_iterations:    "⚠️ No reply: an error occurred near the iteration limit before a final answer. Check the tool output above, then send `continue`."
   no_reply_pending_tool_result:          "⚠️ No reply: the turn stopped while a tool result was still pending and the model produced no follow-up text. Send `continue` to let it summarize."
+
+  # Destructive slash-command confirmation prompt + opt-out note (run.py).
+  slash_confirm_prompt:           "⚠️ **Confirm /{command}**\n\n{detail}\n\nChoose:\n• **Approve Once** — proceed this time only\n• **Always Approve** — proceed and silence this prompt permanently\n• **Cancel** — keep current conversation\n\n_Text fallback: reply `{prefix}approve`, `{prefix}always`, or `{prefix}cancel`._"
+  slash_confirm_disabled_note:    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run without confirmation. Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml."
+
+  # Hermes self-update result notices (run.py).
+  update_failed_exit_code:        "❌ Hermes update failed (exit code {exit_code})."
+  update_timed_out:               "❌ Hermes update timed out after 30 minutes."
+  update_finished_output:         "✅ Hermes update finished.\n\n```\n{output}\n```"
+  update_failed_output:           "❌ Hermes update failed.\n\n```\n{output}\n```"
+  update_finished_ok:             "✅ Hermes update finished successfully."
+  update_finished:                "✅ Hermes update finished."
+  update_failed_generic:          "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+
+  # Proxy-mode error replies (run.py).
+  proxy_error:                    "⚠️ Proxy error ({status}): {detail}"
+  proxy_connection_error:         "⚠️ Proxy connection error: {error}"
+
+  # Dangerous-command approval text fallback (run.py).
+  dangerous_command_approval_text: "⚠️ **Dangerous command requires approval:**\n```\n{command}\n```\nReason: {reason}\n\nReply `{prefix}approve` to execute, `{prefix}approve session` to approve this pattern for the session, `{prefix}approve always` to approve permanently, or `{prefix}deny` to cancel."

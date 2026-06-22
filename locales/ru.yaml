@@ -286,6 +286,26 @@ gateway:
   no_reply_error_near_max_iterations:    "⚠️ Нет ответа: возникла ошибка вблизи лимита итераций до получения финального ответа. Проверьте вывод инструмента выше, затем отправьте `continue`."
   no_reply_pending_tool_result:          "⚠️ Нет ответа: ход остановился, пока результат инструмента ещё ожидался, а модель не произвела текст-продолжение. Отправьте `continue`, чтобы она подвела итог."
 
+  # Подтверждение деструктивной slash-команды + примечание об отключении (run.py).
+  slash_confirm_prompt:           "⚠️ **Подтвердите /{command}**\n\n{detail}\n\nВыберите:\n• **Подтвердить один раз** — выполнить только сейчас\n• **Подтверждать всегда** — выполнить и навсегда отключить этот запрос\n• **Отмена** — сохранить текущий диалог\n\n_Текстовый вариант: ответьте `{prefix}approve`, `{prefix}always` или `{prefix}cancel`._"
+  slash_confirm_disabled_note:    "\n\nℹ️ Дальнейшие /clear, /new, /reset и /undo будут выполняться без подтверждения. Снова включить можно через `approvals.destructive_slash_confirm: true` в config.yaml."
+
+  # Уведомления о результате самообновления Hermes (run.py).
+  update_failed_exit_code:        "❌ Обновление Hermes не удалось (код выхода {exit_code})."
+  update_timed_out:               "❌ Обновление Hermes прервано по таймауту через 30 минут."
+  update_finished_output:         "✅ Обновление Hermes завершено.\n\n```\n{output}\n```"
+  update_failed_output:           "❌ Обновление Hermes не удалось.\n\n```\n{output}\n```"
+  update_finished_ok:             "✅ Обновление Hermes успешно завершено."
+  update_finished:                "✅ Обновление Hermes завершено."
+  update_failed_generic:          "❌ Обновление Hermes не удалось. Проверьте логи шлюза или запустите `hermes update` вручную для подробностей."
+
+  # Ответы об ошибках в режиме прокси (run.py).
+  proxy_error:                    "⚠️ Ошибка прокси ({status}): {detail}"
+  proxy_connection_error:         "⚠️ Ошибка подключения к прокси: {error}"
+
+  # Текстовый запрос подтверждения опасной команды (run.py).
+  dangerous_command_approval_text: "⚠️ **Опасная команда требует подтверждения:**\n```\n{command}\n```\nПричина: {reason}\n\nОтветьте `{prefix}approve` для выполнения, `{prefix}approve session` чтобы одобрить этот шаблон на сессию, `{prefix}approve always` чтобы одобрить навсегда, или `{prefix}deny` для отмены."
+
   model:
     error_prefix:           "Ошибка: {error}"
     switched:               "Модель изменена на `{model}`"

@@ -610,3 +610,77 @@ def test_batchI_literal_not_unwrapped_in_run_agent(literal):
     assert literal not in _RUN_AGENT_SRC, (
         f"unwrapped English literal still present in run_agent.py: {literal!r}"
     )
+
+
+# ============================================================================
+# Batch J: gateway/run.py — slash-confirm, Hermes update, proxy, dangerous-cmd
+# ============================================================================
+
+from agent.i18n import reset_language_cache  # noqa: E402
+
+_RUN_PY_SRC = (Path(__file__).parents[2] / "gateway" / "run.py").read_text(encoding="utf-8")
+
+# Each new key with representative kwargs covering every placeholder it declares.
+_BATCH_J_KEYS = [
+    ("gateway.slash_confirm_prompt",
+     {"command": "clear", "detail": "This wipes the conversation.", "prefix": "/"}),
+    ("gateway.slash_confirm_disabled_note", {}),
+    ("gateway.update_failed_exit_code", {"exit_code": 7}),
+    ("gateway.update_timed_out", {}),
+    ("gateway.update_finished_output", {"output": "Updated 3 packages."}),
+    ("gateway.update_failed_output", {"output": "Traceback: boom"}),
+    ("gateway.update_finished_ok", {}),
+    ("gateway.update_finished", {}),
+    ("gateway.update_failed_generic", {}),
+    ("gateway.proxy_error", {"status": 502, "detail": "upstream exploded"}),
+    ("gateway.proxy_connection_error", {"error": "Connection refused"}),
+    ("gateway.dangerous_command_approval_text",
+     {"command": "rm -rf /", "reason": "recursive delete of root", "prefix": "!"}),
+]
+
+
+@pytest.mark.parametrize("key,kwargs", _BATCH_J_KEYS)
+def test_batchJ_key_resolves_in_russian(key, kwargs):
+    """Each Batch J key resolves in Russian, differs from English, and renders kwargs."""
+    reset_language_cache()
+    ru = i18n.t(key, lang="ru", **kwargs)
+    en = i18n.t(key, lang="en", **kwargs)
+    assert isinstance(ru, str) and ru, f"Empty or non-string Russian result for {key!r}"
+    assert ru != en, f"Russian must differ from English for {key!r}"
+    # No leftover placeholder tokens for any kwarg we provided.
+    for name in kwargs:
+        assert ("{" + name + "}") not in ru, f"{key}: unrendered {{{name}}} in Russian"
+        assert ("{" + name + "}") not in en, f"{key}: unrendered {{{name}}} in English"
+    # Provided values actually appear (stringified) in both renderings.
+    for value in kwargs.values():
+        assert str(value) in ru, f"{key}: value {value!r} missing from Russian"
+        assert str(value) in en, f"{key}: value {value!r} missing from English"
+
+
+@pytest.mark.parametrize("literal", [
+    '"❌ Hermes update failed (exit code {}).".format(exit_code)',
+    '"❌ Hermes update timed out after 30 minutes."',
+    'msg = "✅ Hermes update finished successfully."',
+    '"✅ Hermes update finished.",',
+    '"❌ Hermes update failed. Check the gateway logs',
+    'f"⚠️ Proxy connection error: {e}"',
+    'f"⚠️ Proxy error ({resp.status}): {error_text[:300]}"',
+    'f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"',
+    '"\\n\\nℹ️ Future /clear, /new, /reset, and /undo will run "',
+    'f"⚠️ **Dangerous command requires approval:**\\n"',
+])
+def test_batchJ_literal_not_unwrapped(literal):
+    """The original English literals must no longer appear in gateway/run.py."""
+    assert literal not in _RUN_PY_SRC, (
+        f"unwrapped English literal still present in gateway/run.py: {literal!r}"
+    )
+
+
+def test_batchJ_provider_auth_marker_left_untouched():
+    """The marker-coupled provider-auth string MUST stay literal (assertion-free pass).
+
+    Localizing it would break ``_looks_like_gateway_provider_error`` detection and
+    leak raw text on Telegram, so we deliberately do NOT assert it's gone.
+    """
+    # Presence is fine; this test documents the intentional exception.
+    assert 'f"⚠️ Provider authentication failed: {exc}"' in _RUN_PY_SRC

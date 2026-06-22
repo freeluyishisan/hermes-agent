@@ -11700,11 +11700,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             result = await execute()
             if choice == "always":
-                note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
-                )
+                note = t("gateway.slash_confirm_disabled_note")
                 if isinstance(result, str):
                     return result + note
                 # EphemeralReply or other — leave untouched; the opt-out note
@@ -11714,14 +11710,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return result
 
         _p = self._typed_command_prefix_for(event.source.platform)
-        prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
-            f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
+        prompt_message = t(
+            "gateway.slash_confirm_prompt",
+            command=command,
+            detail=detail,
+            prefix=_p,
         )
         return await self._request_slash_confirm(
             event=event,
@@ -12059,13 +12052,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if exit_code == 0:
                         await adapter.send(
                             chat_id,
-                            "✅ Hermes update finished.",
+                            t("gateway.update_finished"),
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     else:
                         await adapter.send(
                             chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
+                            t("gateway.update_failed_exit_code", exit_code=exit_code),
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
@@ -12154,7 +12147,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await adapter.send(
                     chat_id,
-                    "❌ Hermes update timed out after 30 minutes.",
+                    t("gateway.update_timed_out"),
                     metadata=_non_conversational_metadata(metadata, platform=platform),
                 )
             except Exception:
@@ -12254,13 +12247,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
                     if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                        msg = t("gateway.update_finished_output", output=output)
                     else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                        msg = t("gateway.update_failed_output", output=output)
                 elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    msg = t("gateway.update_finished_ok")
                 else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    msg = t("gateway.update_failed_generic")
                 await adapter.send(
                     chat_id,
                     msg,
@@ -13943,7 +13936,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             resp.status, proxy_url, error_text[:500],
                         )
                         return {
-                            "final_response": f"⚠️ Proxy error ({resp.status}): {error_text[:300]}",
+                            "final_response": t("gateway.proxy_error", status=resp.status, detail=error_text[:300]),
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],
@@ -13999,7 +13992,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Proxy connection error to %s: %s", proxy_url, e)
             if not full_response:
                 return {
-                    "final_response": f"⚠️ Proxy connection error: {e}",
+                    "final_response": t("gateway.proxy_connection_error", error=e),
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
@@ -15522,12 +15515,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
-                msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
-                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                msg = t(
+                    "gateway.dangerous_command_approval_text",
+                    command=cmd_preview,
+                    reason=desc,
+                    prefix=_p,
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
