@@ -144,6 +144,17 @@ gateway:
   bg_task_no_creds:            "❌ Background task {task_id} failed: provider credentials not configured."
   bg_task_complete:            "✅ Background task complete\nRequest: \"{preview}\"\n\n"
   bg_task_failed:              "❌ Background task {task_id} failed: {error}"
+
+  # Batch H: onboarding busy-input hints + /bundles + /update managed
+  busy_hint_queued:            "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages stop the current task immediately, or `/busy status` to check. This notice won't appear again."
+  busy_hint_steered:           "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy status` to check. This notice won't appear again."
+  busy_hint_interrupt:         "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue follow-ups for after the current task instead, `/busy steer` to inject them mid-run without interrupting, or `/busy status` to check. This notice won't appear again."
+  tool_progress_hint:          "💡 First-time tip — that tool took a while and I'm streaming every step. If the progress messages feel noisy, send `/verbose` to cycle modes (all → new → off). This notice won't appear again."
+  bundles_unavailable:         "Bundles subsystem unavailable: {exc}"
+  bundles_none_installed:      "No skill bundles installed.\nCreate one on the host with:\n  `hermes bundles create <name> --skill <s1> --skill <s2>`\nDirectory: `{bundles_dir}`"
+  bundles_header:              "**Skill Bundles** ({n} installed):"
+  bundles_invoke_hint:         "Invoke a bundle with `/<slug>` to load all its skills."
+  update_managed:              "✗ {managed_msg}"
   topic_no_chat_id:            "Could not determine chat ID."
   topic_not_enabled:           "Multi-session topic mode is not currently enabled for this chat."
   topic_disabled:              "Multi-session topic mode is disabled for this chat.\n\nExisting Telegram topics are not deleted — they just won't work as independent sessions anymore. The root chat is back to being a normal Hermes chat. Run /topic to re-enable."

@@ -3488,18 +3488,13 @@ class GatewaySlashCommandsMixin:
             from agent.skill_bundles import list_bundles, _bundles_dir
         except Exception as exc:
             logger.warning("Bundles command unavailable: %s", exc)
-            return f"Bundles subsystem unavailable: {exc}"
+            return t("gateway.bundles_unavailable", exc=exc)
 
         bundles = list_bundles()
         if not bundles:
-            return (
-                "No skill bundles installed.\n"
-                "Create one on the host with:\n"
-                "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
-                f"Directory: `{_bundles_dir()}`"
-            )
+            return t("gateway.bundles_none_installed", bundles_dir=_bundles_dir())
 
-        lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]
+        lines = [t("gateway.bundles_header", n=len(bundles)), ""]
         for info in bundles:
             skill_count = len(info.get("skills", []))
             desc = info.get("description") or f"Load {skill_count} skills"
@@ -3509,7 +3504,7 @@ class GatewaySlashCommandsMixin:
             for s in info.get("skills", []):
                 lines.append(f"    · {s}")
         lines.append("")
-        lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
+        lines.append(t("gateway.bundles_invoke_hint"))
         return "\n".join(lines)
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
@@ -3681,7 +3676,7 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.update.platform_not_messaging")
 
         if is_managed():
-            return f"✗ {format_managed_message('update Hermes Agent')}"
+            return t("gateway.update_managed", managed_msg=format_managed_message('update Hermes Agent'))
 
         project_root = Path(__file__).parent.parent.resolve()
         git_dir = project_root / '.git'
