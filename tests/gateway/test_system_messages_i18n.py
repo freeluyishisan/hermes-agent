@@ -684,3 +684,63 @@ def test_batchJ_provider_auth_marker_left_untouched():
     """
     # Presence is fine; this test documents the intentional exception.
     assert 'f"⚠️ Provider authentication failed: {exc}"' in _RUN_PY_SRC
+
+
+# ============================================================================
+# Batch K: telegram.py — model-picker headers + approval attribution
+# ============================================================================
+
+# telegram.py source is already read once as _TELEGRAM_SRC above; reuse it.
+
+# Each new key with representative kwargs covering every placeholder it declares.
+_BATCH_K_KEYS = [
+    ("gateway.tg_current_model", {"model": "claude-opus-4"}),
+    ("gateway.tg_provider_line", {"provider": "Anthropic"}),
+    ("gateway.tg_select_provider", {}),
+    ("gateway.tg_provider_bold", {"provider": "Anthropic", "page_info": " (1/3)"}),
+    ("gateway.tg_select_model", {"extra": "\n_2 more available_"}),
+    ("gateway.tg_provider_family", {"family": "OpenAI"}),
+    ("gateway.tg_error_switching_model", {"error": "boom"}),
+    ("gateway.tg_resolved", {}),
+    ("gateway.tg_decision_by", {"label": "Approved once", "user": "Alice"}),
+    ("gateway.tg_decision_appended",
+     {"original": "Original message", "label": "Approved once", "user": "Alice"}),
+]
+
+
+@pytest.mark.parametrize("key,kwargs", _BATCH_K_KEYS)
+def test_batchK_key_resolves_in_russian(key, kwargs):
+    """Each Batch K key resolves in Russian, differs from English, and renders kwargs."""
+    reset_language_cache()
+    ru = i18n.t(key, lang="ru", **kwargs)
+    en = i18n.t(key, lang="en", **kwargs)
+    assert isinstance(ru, str) and ru, f"Empty or non-string Russian result for {key!r}"
+    assert ru != en, f"Russian must differ from English for {key!r}"
+    # No leftover placeholder tokens for any kwarg we provided.
+    for name in kwargs:
+        assert ("{" + name + "}") not in ru, f"{key}: unrendered {{{name}}} in Russian"
+        assert ("{" + name + "}") not in en, f"{key}: unrendered {{{name}}} in English"
+    # Provided values actually appear (stringified) in both renderings.
+    for value in kwargs.values():
+        assert str(value) in ru, f"{key}: value {value!r} missing from Russian"
+        assert str(value) in en, f"{key}: value {value!r} missing from English"
+
+
+@pytest.mark.parametrize("literal", [
+    'f"Error switching model: {exc}"',
+    'f"{label} by {user_display}"',
+    'f"Select a model:{extra}"',
+    'f"Select a provider:"',
+    '"Current model: `{current_model',
+    '"Current model: `{state[',
+    'f"Provider: {provider_label}',
+    'f"Provider: *{pname}*{page_info}',
+    'f"Provider family:',
+    'label_map.get(choice, "Resolved")',
+    'f"{original_text}\\n— {label} by {user_display}"',
+])
+def test_batchK_literal_not_unwrapped(literal):
+    """The original English literals must no longer appear in telegram.py."""
+    assert literal not in _TELEGRAM_SRC, (
+        f"unwrapped English literal still present in telegram.py: {literal!r}"
+    )

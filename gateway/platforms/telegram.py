@@ -3442,9 +3442,9 @@ class TelegramAdapter(BasePlatformAdapter):
             text = self.format_message(
                 (
                     f"{t('gateway.tg_model_config_header')}\n\n"
-                    f"Current model: `{current_model or 'unknown'}`\n"
-                    f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                    f"{t('gateway.tg_current_model', model=current_model or 'unknown')}\n"
+                    f"{t('gateway.tg_provider_line', provider=provider_label)}\n\n"
+                    f"{t('gateway.tg_select_provider')}"
                 )
             )
 
@@ -3617,8 +3617,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 text=self.format_message(
                     (
                         f"{t('gateway.tg_model_config_header')}\n\n"
-                        f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"{t('gateway.tg_provider_bold', provider=pname, page_info=page_info)}\n"
+                        f"{t('gateway.tg_select_model', extra=extra)}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -3653,8 +3653,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 text=self.format_message(
                     (
                         f"{t('gateway.tg_model_config_header')}\n\n"
-                        f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"{t('gateway.tg_provider_bold', provider=pname, page_info=page_info)}\n"
+                        f"{t('gateway.tg_select_model', extra=extra)}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -3688,7 +3688,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
-                result_text = f"Error switching model: {exc}"
+                result_text = t("gateway.tg_error_switching_model", error=exc)
                 switch_failed = True
 
             try:
@@ -3767,7 +3767,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
-                result_text = f"Error switching model: {exc}"
+                result_text = t("gateway.tg_error_switching_model", error=exc)
                 switch_failed = True
 
             # Edit message to show confirmation, remove buttons
@@ -3829,8 +3829,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 text=self.format_message(
                     (
                         f"{t('gateway.tg_model_config_header')}\n\n"
-                        f"Provider family: *{_label or group_id}*\n\n"
-                        f"Select a provider:"
+                        f"{t('gateway.tg_provider_family', family=_label or group_id)}\n\n"
+                        f"{t('gateway.tg_select_provider')}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -3851,9 +3851,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 text=self.format_message(
                     (
                         f"{t('gateway.tg_model_config_header')}\n\n"
-                        f"Current model: `{state['current_model'] or 'unknown'}`\n"
-                        f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
+                        f"{t('gateway.tg_current_model', model=state['current_model'] or 'unknown')}\n"
+                        f"{t('gateway.tg_provider_line', provider=provider_label)}\n\n"
+                        f"{t('gateway.tg_select_provider')}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -3944,14 +3944,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     "deny": t("gateway.tg_denied"),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
+                label = label_map.get(choice, t("gateway.tg_resolved"))
 
                 await query.answer(text=label)
 
                 # Edit message to show decision, remove buttons
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
+                        text=self.format_message(t("gateway.tg_decision_by", label=label, user=user_display)),
                         parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
@@ -4008,13 +4008,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "cancel": t("gateway.tg_cancelled_label"),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
+                label = label_map.get(choice, t("gateway.tg_resolved"))
 
                 await query.answer(text=label)
 
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
+                        text=self.format_message(t("gateway.tg_decision_by", label=label, user=user_display)),
                         parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
@@ -4324,7 +4324,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         user_display = getattr(query.from_user, "first_name", "User")
         original_text = (query.message.text or "") if query.message else ""
-        appended = f"{original_text}\n— {label} by {user_display}"
+        appended = t("gateway.tg_decision_appended", original=original_text, label=label, user=user_display)
         try:
             if is_state_verb:
                 # Sticky state change: append confirmation, KEEP keyboard so
