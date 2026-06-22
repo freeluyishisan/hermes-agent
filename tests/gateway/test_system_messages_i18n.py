@@ -459,3 +459,69 @@ def test_batchG_scheduler_uses_t_for_cron_prefix():
     assert 't("gateway.cron_response_prefix")' in _SCHEDULER_SRC, (
         "scheduler.py not using t('gateway.cron_response_prefix')"
     )
+
+
+# ---- Batch H: onboarding busy-input hints + /bundles + /update managed ----
+
+_ONBOARDING_PY = Path(__file__).parents[2] / "agent" / "onboarding.py"
+_ONBOARDING_SRC = _ONBOARDING_PY.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("key,kwargs", [
+    ("gateway.busy_hint_queued", {}),
+    ("gateway.busy_hint_steered", {}),
+    ("gateway.busy_hint_interrupt", {}),
+    ("gateway.tool_progress_hint", {}),
+    ("gateway.bundles_unavailable", {"exc": "ImportError"}),
+    ("gateway.bundles_none_installed", {"bundles_dir": "/home/user/.hermes/bundles"}),
+    ("gateway.bundles_header", {"n": 3}),
+    ("gateway.bundles_invoke_hint", {}),
+    ("gateway.update_managed", {"managed_msg": "update Hermes Agent"}),
+])
+def test_batchH_key_resolves_in_russian(key, kwargs):
+    """Each Batch H key must resolve (not raise) in Russian."""
+    result = i18n.t(key, lang="ru", **kwargs)
+    assert isinstance(result, str) and result, f"Empty or non-string result for {key!r}"
+
+
+def test_batchH_busy_hint_queued_russian_content():
+    """Russian busy_hint_queued must contain the /busy commands."""
+    result = i18n.t("gateway.busy_hint_queued", lang="ru")
+    assert "/busy interrupt" in result
+    assert "/busy status" in result
+
+
+def test_batchH_busy_hint_steered_russian_content():
+    """Russian busy_hint_steered must contain both /busy commands."""
+    result = i18n.t("gateway.busy_hint_steered", lang="ru")
+    assert "/busy interrupt" in result
+    assert "/busy queue" in result
+
+
+def test_batchH_bundles_none_installed_russian_contains_dir():
+    """Russian bundles_none_installed must include the bundles_dir placeholder."""
+    result = i18n.t("gateway.bundles_none_installed", lang="ru", bundles_dir="/opt/bundles")
+    assert "/opt/bundles" in result
+
+
+def test_batchH_update_managed_russian_preserves_managed_msg():
+    """Russian update_managed must pass the managed_msg through."""
+    result = i18n.t("gateway.update_managed", lang="ru", managed_msg="contact your administrator")
+    assert "contact your administrator" in result
+
+
+def test_batchH_onboarding_uses_t_not_hardcoded():
+    """onboarding.py must NOT contain the old hardcoded English busy-hint strings."""
+    assert "First-time tip — I queued" not in _ONBOARDING_SRC
+    assert "First-time tip — I steered" not in _ONBOARDING_SRC
+    assert "First-time tip — I just interrupted" not in _ONBOARDING_SRC
+    assert "First-time tip — that tool took" not in _ONBOARDING_SRC
+
+
+def test_batchH_slash_commands_uses_t_not_hardcoded():
+    """slash_commands.py must NOT contain the old hardcoded /bundles strings."""
+    assert '"Bundles subsystem unavailable:' not in _SLASH_COMMANDS_PY
+    assert '"No skill bundles installed.' not in _SLASH_COMMANDS_PY
+    assert '"**Skill Bundles**' not in _SLASH_COMMANDS_PY
+    assert '"Invoke a bundle with' not in _SLASH_COMMANDS_PY
+    assert 'f"✗ {format_managed_message(' not in _SLASH_COMMANDS_PY
