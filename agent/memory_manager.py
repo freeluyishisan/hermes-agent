@@ -46,22 +46,27 @@ logger = logging.getLogger(__name__)
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 
 
-def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
-    """Return whether external memory-provider tools should be exposed."""
+def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]] = None) -> bool:
+    """Return whether external memory-provider tools should be exposed.
+
+    Gate logic (Issue #45422):
+      enabled_toolsets is None          → no filter, inject (backward compat)
+      enabled_toolsets is non-empty     → inject (platform has tools; external
+                                           memory provider works regardless of
+                                           whether the built-in memory toolset
+                                           is explicitly named)
+      enabled_toolsets is empty ([])    → skip (constrained platform, no tools)
+      "memory" in disabled_toolsets     → skip (global nuclear option — user
+                                           explicitly opted out of ALL memory)
+    """
+    if disabled_toolsets and "memory" in disabled_toolsets:
+        return False
     if enabled_toolsets is None:
         return True
     if not enabled_toolsets:
         return False
-    if "memory" in enabled_toolsets:
-        return True
-
-    try:
-        from toolsets import resolve_toolset
-
-        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
-    except Exception:
-        logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
-        return False
+    # Any non-empty toolset list allows external memory providers (#45422)
+    return True
 
 
 def inject_memory_provider_tools(agent: Any) -> int:
@@ -78,7 +83,10 @@ def inject_memory_provider_tools(agent: Any) -> int:
     }
     if (
         "memory" not in existing_tool_names
-        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+        and not memory_provider_tools_enabled(
+            getattr(agent, "enabled_toolsets", None),
+            getattr(agent, "disabled_toolsets", None),
+        )
     ):
         return 0
 
