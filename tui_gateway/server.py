@@ -4672,6 +4672,15 @@ def _(rid, params: dict) -> dict:
             # parent's entire transcript — a watch window opened on a subagent
             # must show the subagent's branch, not the parent's prompt.
             history = db.get_messages_as_conversation(target)
+            # Detect delegate child sessions so we can permanently block
+            # direct user prompts.  A lazy session for a delegate child
+            # should be read-only — the child runs inside the parent's turn
+            # and must never accept follow-up prompts that would fork the
+            # conversation away from the parent.  (#45336)
+            session_meta = db.get_session(target)
+            is_delegate_child = bool(
+                session_meta and session_meta.get("parent_session_id")
+            )
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -4713,6 +4722,7 @@ def _(rid, params: dict) -> dict:
                     "inflight_turn": None,
                     "last_active": now,
                     "lazy": True,
+                    "delegate_child": is_delegate_child,
                     "pending_title": None,
                     "profile_home": str(profile_home) if profile_home is not None else None,
                     "resume_session_id": target,
@@ -6345,6 +6355,13 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        # Delegate child sessions are read-only watch windows — the child
+        # runs inside the parent's turn and must never accept direct user
+        # prompts that would fork the conversation away from the parent.
+        # After the child completes, the session stays a historical record;
+        # follow-up prompts belong in the parent session.  (#45336)
+        if session.get("delegate_child"):
+            return _err(rid, 4009, "delegate child session is read-only — send prompts to the parent session")
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
