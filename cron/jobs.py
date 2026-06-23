@@ -738,6 +738,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -869,6 +870,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "profile": str(profile).strip() if isinstance(profile, str) and profile.strip() else None,
     }
 
     with _jobs_lock():
@@ -959,6 +961,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # Normalize profile — empty string clears the field.
+            if "profile" in updates:
+                _p = updates["profile"]
+                updates["profile"] = str(_p).strip() if isinstance(_p, str) and _p.strip() else None
 
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates

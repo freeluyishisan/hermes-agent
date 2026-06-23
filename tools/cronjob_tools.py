@@ -471,6 +471,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
     return result
 
 
@@ -540,6 +542,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     task_id: str = None,
+    profile: Optional[str] = None,
 ) -> str:
     """Unified cron job management tool."""
     del task_id  # unused but kept for handler signature compatibility
@@ -605,6 +608,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                profile=profile,
             )
             _notify_provider_jobs_changed_safe()
             return json.dumps(
@@ -771,6 +775,9 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if profile is not None:
+                # Empty string clears the field; otherwise set the profile name.
+                updates["profile"] = profile or None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -911,6 +918,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "profile": {
+                "type": "string",
+                "description": "Assign this job to a specific profile. The job's cron data (db, output) stays in the profile's home. Pass empty string to clear, or omit to keep current. Only meaningful on create/update."
+            },
         },
         "required": ["action"]
     }
@@ -966,6 +977,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        profile=args.get("profile"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
