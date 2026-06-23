@@ -1400,7 +1400,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             data=exchange_data,
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                "User-Agent": f"hermes-agent/{_get_claude_code_version()} (external, cli)",
             },
             method="POST",
         )
