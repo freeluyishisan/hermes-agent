@@ -314,8 +314,12 @@ def _push_completion_event(
         "role": record.get("role"),
         # Surface which profile actually ran (None for ordinary subagents), so a
         # background completion re-entering the chat carries the same identity
-        # metadata as a synchronous result. See issue #41889.
+        # metadata as a synchronous result. profile_memory (read/write) and any
+        # parent-bounded toolset drops are carried too, for full parity with the
+        # synchronous result entry. See issue #41889.
         "profile": result.get("profile"),
+        "profile_memory": result.get("profile_memory"),
+        "profile_toolsets_dropped": result.get("profile_toolsets_dropped"),
         "model": result.get("model") or record.get("model"),
         "status": status,
         "summary": summary,
