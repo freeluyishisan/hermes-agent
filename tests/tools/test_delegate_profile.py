@@ -421,6 +421,24 @@ class TestProfileToolsetBounding(unittest.TestCase):
             getattr(child, "_delegate_profile_dropped_toolsets"), []
         )
 
+    def test_blanket_stripped_toolsets_not_reported_as_dropped(self):
+        # code_execution is stripped from EVERY subagent, not because the parent
+        # lacks it. A profile enabling it must NOT be reported as a parent-
+        # privilege drop — only genuinely unavailable tools (here 'web') should.
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()):
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None,
+                toolsets=["file", "code_execution", "web"], model="m",
+                max_iterations=3, task_count=1,
+                parent_agent=self._parent(["file", "code_execution"]),
+                profile_soul="persona", profile_name="reader",
+            )
+        self.assertEqual(
+            getattr(child, "_delegate_profile_dropped_toolsets"), ["web"]
+        )
+
     def test_no_drop_field_for_non_profile_child(self):
         # Ordinary (non-profile) subagents never get a dropped-toolset list.
         from tools.delegate_tool import _build_child_agent

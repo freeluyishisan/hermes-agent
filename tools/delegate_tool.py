@@ -823,13 +823,28 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+# Toolsets stripped from EVERY subagent regardless of profile (re-added only by
+# capability: 'delegation' for orchestrators, 'memory' for write-back profiles).
+# Hoisted to module scope so the profile-toolset-drop accounting can exclude
+# them — a profile enabling e.g. code_execution shouldn't be reported as a
+# parent-privilege drop when it's really this blanket subagent strip.
+_BLOCKED_SUBAGENT_TOOLSETS = {
+    "delegation",
+    "clarify",
+    "memory",
+    "code_execution",
+}
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools.
 
     The strip set is derived from DELEGATE_BLOCKED_TOOLS plus the explicit
     composite/scenario toolsets (delegation, code_execution) that have no
-    one-to-one tool. This keeps the blocklist and the strip set in lockstep
-    so new blocked tools can't silently leak through as toolset names.
+    one-to-one tool, then unioned with _BLOCKED_SUBAGENT_TOOLSETS so the four
+    toolsets the profile-drop accounting excludes are always stripped in
+    lockstep. This keeps the blocklist and the strip set consistent so new
+    blocked tools can't silently leak through as toolset names.
     """
     # Composite toolsets that should never pass through to children, even
     # though their individual tools aren't all in DELEGATE_BLOCKED_TOOLS.
@@ -839,7 +854,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         for name, defn in TOOLSETS.items()
         if name in _COMPOSITE_BLOCKED_TOOLSETS
         or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
-    }
+    } | _BLOCKED_SUBAGENT_TOOLSETS
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
@@ -1217,7 +1232,15 @@ def _build_child_agent(
     # surfaced to the caller rather than the child silently running degraded.
     profile_dropped_toolsets: List[str] = []
     if profile_name and toolsets:
-        profile_dropped_toolsets = [t for t in toolsets if t not in child_toolsets]
+        # Only count GENUINE parent-privilege drops: a requested toolset the
+        # parent couldn't grant. Exclude the toolsets stripped from every
+        # subagent (code_execution/clarify/memory/delegation) — those aren't
+        # "the parent lacks it", so reporting them would wrongly imply the
+        # profile ran tool-degraded relative to the parent.
+        profile_dropped_toolsets = [
+            t for t in toolsets
+            if t not in child_toolsets and t not in _BLOCKED_SUBAGENT_TOOLSETS
+        ]
         if profile_dropped_toolsets:
             logger.info(
                 "Profile '%s' delegation: toolset(s) %s dropped — not available "
@@ -1694,7 +1717,13 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
     soul_path = profile_dir / "SOUL.md"
     try:
         if soul_path.is_file():
-            soul = soul_path.read_text(encoding="utf-8-sig").strip()
+            try:
+                soul = soul_path.read_text(encoding="utf-8-sig").strip()
+            except UnicodeDecodeError:
+                # cp1252 SOUL.md touched by a Windows editor (CONTRIBUTING.md
+                # cross-platform rule #4) — fall back to latin-1, mirroring the
+                # .env read below, so the persona isn't silently dropped.
+                soul = soul_path.read_text(encoding="latin-1").strip()
     except Exception as exc:
         logger.debug("Could not read SOUL.md for profile %s: %s", canon, exc)
 
@@ -1732,6 +1761,19 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
     except Exception as exc:
         logger.debug("Could not read .env for profile %s: %s", canon, exc)
 
+    # NOTE on credential resolution: the secret scope below is the profile's
+    # OWN .env only — get_secret() treats an installed scope as authoritative
+    # and does NOT fall through to os.environ (see agent/secret_scope.py). So a
+    # profile must carry the credentials it needs in <profile_dir>/.env. A
+    # profile that relied on the ambient process environment (a shell-exported
+    # key, the machine-global managed-scope .env, or a Bitwarden-injected
+    # secret) the way a direct `hermes -p <name>` run does will NOT see those
+    # here. On providers that demand a key it surfaces as the ValueError below;
+    # on key-optional providers the bundle's api_key comes back empty and the
+    # child inherits the PARENT's key (effective_api_key = override_api_key or
+    # parent_api_key in _build_child_agent). Composing the ambient/managed scope
+    # underneath the profile's own .env is the cleaner long-term fix (tracked
+    # separately); for now, profile delegation expects per-profile credentials.
     home_token = set_hermes_home_override(str(profile_dir))
     scope_token = set_secret_scope(prof_env)
     try:
@@ -1749,8 +1791,10 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
         except Exception as exc:
             raise ValueError(
                 f"Could not resolve runtime for profile '{canon}': {exc}. "
-                f"Check that the profile is configured "
-                f"(`hermes -p {canon} doctor`)."
+                f"Profile delegation reads credentials from the profile's own "
+                f"{profile_dir / '.env'} (not the ambient environment or the "
+                f"root .env), so add the provider key there, or verify the "
+                f"profile with `hermes -p {canon} doctor`."
             ) from exc
         base_url = runtime.get("base_url")
         api_key = runtime.get("api_key")
