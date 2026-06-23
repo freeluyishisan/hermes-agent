@@ -299,6 +299,57 @@ class TestStaleSessionLockSelfHeal:
         assert sk in adapter._active_sessions
         assert sk in adapter._session_tasks
 
+    @pytest.mark.asyncio
+    async def test_guard_mismatch_preserves_session_task_for_stale_detection(self):
+        """When guard mismatch skips _release_session_guard, _session_tasks is preserved.
+
+        This is the core of the production split-brain fix: the finally block
+        only deletes _session_tasks[key] if _active_sessions[key] was actually
+        released. If the guard was swapped (e.g., by a reset command), the
+        _session_tasks entry remains so _session_task_is_stale can detect the
+        done task and heal the lock on the next inbound message.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        # Simulate: task recorded with guard=event_a
+        event_a = asyncio.Event()
+        async def _done():
+            return None
+
+        done_task = asyncio.create_task(_done())
+        await done_task
+
+        adapter._active_sessions[sk] = event_a
+        adapter._session_tasks[sk] = done_task
+
+        # Simulate guard swap (as reset/new command would do)
+        event_b = asyncio.Event()
+        adapter._active_sessions[sk] = event_b
+
+        # Now simulate the finally block:
+        # _release_session_guard sees event_b != event_a → skips
+        # But _session_tasks should NOT be deleted
+        current_task = done_task
+        if current_task is not None and adapter._session_tasks.get(sk) is current_task:
+            adapter._release_session_guard(sk, guard=event_a)
+            if sk not in adapter._active_sessions:
+                del adapter._session_tasks[sk]
+
+        # _session_tasks preserved because guard mismatch kept _active_sessions
+        assert sk in adapter._session_tasks, (
+            "_session_tasks entry must survive guard mismatch so stale detection works"
+        )
+        assert adapter._session_tasks[sk] is done_task
+
+        # Stale detection now works: task is done, guard is stale
+        assert adapter._session_task_is_stale(sk) is True
+
+        # Heal clears both
+        assert adapter._heal_stale_session_lock(sk) is True
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+
 
 # ===========================================================================
 # Layer 3: Runner-side generation guard on slot promotion + release

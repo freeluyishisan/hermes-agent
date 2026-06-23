@@ -4976,8 +4976,9 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
-                    del self._session_tasks[session_key]
                     self._release_session_guard(session_key, guard=interrupt_event)
+                    if session_key not in self._active_sessions:
+                        del self._session_tasks[session_key]
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
