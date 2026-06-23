@@ -185,7 +185,12 @@ def relaunch(
         # Windows: subprocess + exit, because execvp can't swap to .cmd/.exe shims.
         import subprocess
         try:
-            result = subprocess.run(new_argv)
+            # CREATE_NO_WINDOW (0x08000000) prevents a visible console window
+            # from flashing when the relaunched process starts.
+            result = subprocess.run(
+                new_argv,
+                creationflags=0x08000000,
+            )
             sys.exit(result.returncode)
         except KeyboardInterrupt:
             sys.exit(130)

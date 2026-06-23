@@ -1955,7 +1955,7 @@ async function applyUpdates(opts = {}) {
       },
       detached: true,
       stdio: 'ignore',
-      windowsHide: false
+      windowsHide: true
     })
     child.unref()
 
@@ -2002,7 +2002,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     },
     detached: true,
     stdio: 'ignore',
-    windowsHide: false
+    windowsHide: true
   })
   child.unref()
 

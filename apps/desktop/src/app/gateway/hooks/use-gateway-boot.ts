@@ -50,6 +50,10 @@ interface GatewayBootOptions {
   refreshSessions: () => Promise<void>
 }
 
+const GATEWAY_STALE_EVENT_MS = 25_000
+const GATEWAY_STALE_CHECK_MS = 5_000
+const GATEWAY_RECONNECT_ESCALATE_ATTEMPTS = 6
+
 export function useGatewayBoot({
   handleGatewayEvent,
   onConnectionReady,
@@ -101,6 +105,7 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    let lastPrimaryEventAt = Date.now()
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -181,6 +186,10 @@ export function useGatewayBoot({
         return
       }
 
+      if (bootCompleted && reconnectAttempt >= GATEWAY_RECONNECT_ESCALATE_ATTEMPTS && !$desktopBoot.get().error) {
+        failDesktopBoot('Hermes gateway connection was lost. Reconnecting...')
+      }
+
       // 1s, 2s, 4s … capped at 15s.
       const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
       reconnectAttempt += 1
@@ -247,7 +256,10 @@ export function useGatewayBoot({
       }
     })
 
-    const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent(event))
+    const offEvent = gateway.onEvent(event => {
+      lastPrimaryEventAt = Date.now()
+      callbacksRef.current.handleGatewayEvent(event)
+    })
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
@@ -270,6 +282,24 @@ export function useGatewayBoot({
       touchActiveGatewayBackend()
       touchSecondaryGateways()
     }, 60_000)
+
+    // A browser WebSocket can get stuck half-open: readyState stays OPEN, so
+    // neither onclose nor request-timeout reconnect logic runs, but the event
+    // stream stops painting. While a session is actively working the gateway
+    // emits heartbeat/status events every few seconds; if that goes quiet,
+    // force-close the socket and let the existing reconnect path reattach.
+    const staleGatewayTimer = setInterval(() => {
+      if (!bootCompleted || !gatewayOpen() || $workingSessionIds.get().length === 0) {
+        return
+      }
+
+      if (Date.now() - lastPrimaryEventAt < GATEWAY_STALE_EVENT_MS) {
+        return
+      }
+
+      gateway.close()
+      scheduleReconnect()
+    }, GATEWAY_STALE_CHECK_MS)
 
     // Bound concurrency cost to live work: keep a background socket only while
     // its profile has a running (working) or blocked (needs-input) session.
@@ -393,6 +423,7 @@ export function useGatewayBoot({
       cancelled = true
       clearReconnectTimer()
       clearInterval(keepaliveTimer)
+      clearInterval(staleGatewayTimer)
       offWorking()
       offAttention()
       offActiveProfile()

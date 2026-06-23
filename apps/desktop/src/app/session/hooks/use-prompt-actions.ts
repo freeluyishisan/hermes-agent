@@ -739,14 +739,34 @@ export function usePromptActions({
 
         return true
       } catch (err) {
-        releaseBusy()
+        // A submit can race a backend turn the frontend has lost track of
+        // (missed websocket event, reconnect, long tool-only stretch). Treat
+        // "session busy" as authoritative backend state, not as a failed prompt:
+        // keep the session busy and let the composer queue/auto-drain retry when
+        // the gateway reports idle.
+        if (isSessionBusyError(err)) {
+          if (sessionId) {
+            dropOptimistic(sessionId)
+            updateSessionState(
+              sessionId,
+              state => ({
+                ...state,
+                busy: true,
+                awaitingResponse: true,
+                turnStartedAt: state.turnStartedAt ?? Date.now()
+              }),
+              selectedStoredSessionIdRef.current
+            )
+          }
 
-        // A queued drain that raced a not-yet-settled turn gets a transient
-        // "session busy" (4009). Don't surface an error bubble/toast — the entry
-        // stays queued and the composer's bounded auto-drain retries when idle.
-        if (options?.fromQueue && isSessionBusyError(err)) {
+          setMutableRef(busyRef, true)
+          setBusy(true)
+          setAwaitingResponse(true)
+
           return false
         }
+
+        releaseBusy()
 
         const message = inlineErrorMessage(err, copy.promptFailed)
 
@@ -1392,9 +1412,20 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
-    const releaseBusy = () => {
-      setMutableRef(busyRef, false)
-      setBusy(false)
+    const interruptWithTimeout = async (runtimeSessionId: string) => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          requestGateway('session.interrupt', { session_id: runtimeSessionId }),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('interrupt request timed out')), 3500)
+          })
+        ])
+      } finally {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId)
+        }
+      }
     }
 
     setAwaitingResponse(false)
@@ -1410,7 +1441,8 @@ export function usePromptActions({
         )
 
     if (!sessionId) {
-      releaseBusy()
+      setMutableRef(busyRef, false)
+      setBusy(false)
       setMessages(finalizeMessages($messages.get()))
 
       return
@@ -1423,6 +1455,9 @@ export function usePromptActions({
       return {
         ...state,
         messages,
+        // Stop is the user's escape hatch. session.interrupt is cooperative,
+        // but the UI must not stay trapped behind a stale busy flag if the
+        // websocket/gateway is disconnected or the backend takes time to unwind.
         busy: false,
         awaitingResponse: false,
         streamId: null,
@@ -1430,14 +1465,15 @@ export function usePromptActions({
         interrupted: true
       }
     })
+    setMutableRef(busyRef, false)
+    setBusy(false)
 
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
-      releaseBusy()
+      await interruptWithTimeout(sessionId)
     } catch (err) {
       let stopError = err
 
@@ -1451,8 +1487,7 @@ export function usePromptActions({
 
           if (recoveredId) {
             activeSessionIdRef.current = recoveredId
-            await requestGateway('session.interrupt', { session_id: recoveredId })
-            releaseBusy()
+            await interruptWithTimeout(recoveredId)
 
             return
           }
@@ -1461,7 +1496,8 @@ export function usePromptActions({
         }
       }
 
-      releaseBusy()
+      setMutableRef(busyRef, false)
+      setBusy(false)
       notifyError(stopError, copy.stopFailed)
     }
   }, [

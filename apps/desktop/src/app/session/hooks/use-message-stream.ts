@@ -132,6 +132,10 @@ function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
   return Object.keys(patch).length > 0
 }
 
+function eventTurnId(payload: GatewayEventPayload | undefined): string | null {
+  return typeof payload?.turn_id === 'string' && payload.turn_id ? payload.turn_id : null
+}
+
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
 // token got its own React commit + Streamdown markdown re-parse, scaling
@@ -155,6 +159,32 @@ function completionErrorText(finalText: string): string | null {
   const text = finalText.trim()
 
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
+}
+
+export function settleAssistantPartsOnCompletion(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+  if (!finalText) {
+    return parts
+  }
+
+  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+  const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+  const dedupeReference = normalize(visibleFinalText)
+
+  const kept = parts.filter(part => {
+    if (part.type === 'text') {
+      return false
+    }
+
+    if (part.type !== 'reasoning' || !dedupeReference) {
+      return true
+    }
+
+    const r = normalize(part.text)
+
+    return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
+  })
+
+  return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
 }
 
 const SUBAGENT_EVENT_TYPES = new Set([
@@ -529,7 +559,7 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (sessionId: string, text: string, turnId: string | null = null) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -545,6 +575,8 @@ export function useMessageStream({
             needsInput: false,
             pendingBranchGroup: null,
             streamId: null,
+            activeTurnId: null,
+            completedTurnId: turnId ?? state.activeTurnId ?? state.completedTurnId,
             turnStartedAt: null
           }
         }
@@ -552,28 +584,6 @@ export function useMessageStream({
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
-        const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
-
-        const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
-          const dedupeReference = normalize(visibleFinalText)
-
-          const kept = parts.filter(part => {
-            if (part.type === 'text') {
-              return false
-            }
-
-            if (part.type !== 'reasoning' || !dedupeReference) {
-              return true
-            }
-
-            const r = normalize(part.text)
-
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
-          })
-
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
-        }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
           completionError
@@ -585,7 +595,7 @@ export function useMessageStream({
               }
             : {
                 ...message,
-                parts: replaceTextPart(message.parts),
+                parts: settleAssistantPartsOnCompletion(message.parts, finalText),
                 pending: false
               }
 
@@ -635,6 +645,8 @@ export function useMessageStream({
           messages: nextMessages,
           streamId: null,
           pendingBranchGroup: null,
+          activeTurnId: null,
+          completedTurnId: turnId ?? state.activeTurnId ?? state.completedTurnId,
           awaitingResponse: false,
           busy: false,
           needsInput: false,
@@ -704,6 +716,7 @@ export function useMessageStream({
           awaitingResponse: false,
           busy: false,
           needsInput: false,
+          activeTurnId: null,
           turnStartedAt: null
         }
       })
@@ -835,6 +848,7 @@ export function useMessageStream({
           return
         }
 
+        const turnId = eventTurnId(payload)
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
@@ -851,6 +865,7 @@ export function useMessageStream({
           awaitingResponse: true,
           sawAssistantPayload: false,
           interrupted: false,
+          activeTurnId: turnId,
           turnStartedAt: Date.now()
         }))
 
@@ -891,7 +906,7 @@ export function useMessageStream({
         playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        completeAssistantMessage(sessionId, finalText, eventTurnId(payload))
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -1080,6 +1095,26 @@ export function useMessageStream({
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
+        } else if (sessionId && payload?.kind === 'heartbeat') {
+          // Long-running tool turns may not emit tokens/tool progress for a
+          // while. Treat the backend heartbeat as authoritative liveness so the
+          // composer/status bar stays in "working" instead of appearing frozen.
+          const turnId = eventTurnId(payload)
+          const nextState = updateSessionState(sessionId, state => {
+            const staleTurn =
+              !!turnId &&
+              (state.completedTurnId === turnId || (!!state.activeTurnId && state.activeTurnId !== turnId))
+
+            return {
+              ...state,
+              awaitingResponse: state.interrupted ? false : state.awaitingResponse,
+              busy: state.interrupted || staleTurn ? false : true,
+              turnStartedAt: state.interrupted || staleTurn ? null : (state.turnStartedAt ?? Date.now())
+            }
+          })
+          if (isActiveEvent && nextState.busy) {
+            setTurnStartedAt(current => current ?? Date.now())
+          }
         }
       } else if (event.type === 'review.summary') {
         // Self-improvement background review saved something to memory/skills
