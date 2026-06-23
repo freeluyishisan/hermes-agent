@@ -284,6 +284,39 @@ def test_forget_tool_by_query(provider):
     assert result["id"] == "m7"
 
 
+def test_subagent_context_disables_writes(monkeypatch, tmp_path):
+    # A profile-backed subagent run (agent_context="subagent") must leave the
+    # provider in read-only mode: _write_enabled is False (issue #41889).
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    p = SupermemoryMemoryProvider()
+    p.initialize("s", hermes_home=str(tmp_path), platform="cli", agent_context="subagent")
+    assert p._write_enabled is False
+
+
+def test_store_and_forget_tools_refuse_when_read_only(provider):
+    # The explicit store/forget TOOLS must honor read-only too — previously they
+    # wrote unconditionally, ignoring _write_enabled (issue #41889 follow-up).
+    provider._write_enabled = False
+
+    store = json.loads(provider.handle_tool_call("supermemory_store", {"content": "should not persist"}))
+    assert store.get("error")
+    assert "read-only" in store["error"]
+    assert provider._client.add_calls == []  # nothing written
+
+    forget = json.loads(provider.handle_tool_call("supermemory_forget", {"id": "m1"}))
+    assert forget.get("error")
+    assert "read-only" in forget["error"]
+    assert provider._client.forgotten_ids == []  # nothing forgotten
+
+    # …but retrieval still works in read-only mode.
+    provider._client.search_results = [
+        {"id": "m1", "memory": "still searchable", "similarity": 0.9}
+    ]
+    search = json.loads(provider.handle_tool_call("supermemory_search", {"query": "x"}))
+    assert search["count"] == 1
+
+
 def test_profile_tool_formats_sections(provider):
     provider._client.profile_response = {
         "static": ["Jordan prefers concise docs"],
