@@ -45,6 +45,7 @@ session.create          session.list            session.active_list
 session.activate        session.close           session.interrupt
 session.history         session.compress        session.branch
 session.title           session.usage           session.status
+sessions.patch          session.patch           (alias of sessions.patch)
 clarify.respond         sudo.respond            secret.respond
 approval.respond        config.set / config.get commands.catalog
 command.resolve         command.dispatch        cli.exec
@@ -54,6 +55,76 @@ terminal.resize         clipboard.paste         image.attach
 ```
 
 `session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
+
+### `sessions.patch` — partial session update
+
+`sessions.patch` (and its `session.patch` alias) lets a client update one or
+more session fields in a single round-trip — used by Hermes Desktop's
+"Edit session" panel (issue
+[#27455](https://github.com/NousResearch/hermes-agent/issues/27455)).
+
+```jsonc
+// Request
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "sessions.patch",
+  "params": {
+    "session_id": "<ephemeral sid from session.create>",
+    "patch": {
+      "title": "Refactor the kanban worker",
+      "system_prompt": "You are a meticulous reviewer..."
+    }
+  }
+}
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "session_id": "<sid>",
+    "session_key": "<db row id>",
+    "patched": {
+      "title": "Refactor the kanban worker",
+      "system_prompt": "You are a meticulous reviewer..."
+    },
+    "skipped": []
+  }
+}
+```
+
+The flat shape `{ "session_id": "...", "title": "..." }` is also accepted in
+addition to the nested `patch` object so the runtime adapter on the client
+side can use whichever shape is more convenient.
+
+**Supported fields:** `title`, `system_prompt`. Unknown fields are listed in
+`skipped` rather than failing the call — newer clients can add fields
+without breaking older gateways.
+
+**Error codes:**
+
+| Code   | Meaning                                                  |
+|--------|----------------------------------------------------------|
+| `4001` | session not found (ephemeral `session_id` unknown)       |
+| `4021` | `title` must be a non-empty string                       |
+| `4022` | `title` is already in use by another session             |
+| `4025` | no patchable fields supplied (or only unknown fields)    |
+| `4027` | `system_prompt` is not a string (pass `""` to clear)     |
+| `5007` | session DB unavailable / write failed                    |
+
+When `system_prompt` is patched it is stored as the session's editable
+*ephemeral* prompt (appended at API-call time), not baked into the byte-stable
+assembled base prompt. The in-memory agent's cached base prompt is invalidated
+so the next conversation-loop turn rebuilds it cleanly and picks up the new
+overlay without restarting the session.
+
+**Validation and write order:** all supplied fields are validated *before* any
+write, so an input-level rejection (e.g. a valid `title` paired with an invalid
+`system_prompt`) leaves the session untouched — no partial mutation. Writes
+then apply in order (`title`, then `system_prompt`); a rare DB-write failure on
+the second field after the first has been written is reported via `5007` and
+leaves the first field's write in place.
 
 ### Events streamed back
 
