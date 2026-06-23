@@ -1185,6 +1185,10 @@ def init_agent(
     # profile is actually impersonated.
     _profile_readonly = bool(profile_home) and profile_memory_readonly
     agent._memory_manager = None
+    # Bind before the blocks: the profile-config load below can raise and be
+    # swallowed, and the provider block then reads mem_config — without this it
+    # would raise NameError (caught, but provider init silently skipped).
+    mem_config: dict = {}
     try:
         if not skip_memory:
             try:
