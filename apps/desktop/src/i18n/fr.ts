@@ -52,8 +52,8 @@ export const fr: Translations = {
       startingDesktopConnection: 'Démarrage de la connexion bureau',
       startingHermesDesktop: 'Démarrage de Hermes Desktop…'
     },
-    connectingPrefix: 'Connexion',
-    connectingTail: '…',
+    connectingPrefix: 'CONN',
+    connectingTail: 'EXION',
     errors: {
       backgroundExited: 'Le processus Hermes en arrière-plan s\'est arrêté.',
       backgroundExitedDuringStartup: 'Le processus Hermes en arrière-plan s\'est arrêté pendant le démarrage.',
@@ -652,6 +652,7 @@ export const fr: Translations = {
       checkNow: 'Vérifier maintenant',
       checking: 'Vérification…',
       seeWhatsNew: 'Voir les nouveautés',
+      updateNow: 'Mettre à jour maintenant',
       releaseNotes: 'Notes de version',
       onLatest: 'Vous utilisez la dernière version.',
       installing: 'Une mise à jour est en cours d\'installation.',
@@ -1646,6 +1647,9 @@ export const fr: Translations = {
     manualTitle: 'Mettre à jour depuis le terminal',
     manualBody: 'Vous avez installé Hermes depuis la ligne de commande, les mises à jour s\'y font aussi. Collez ceci dans votre terminal :',
     manualPickedUp: 'Hermes utilisera la nouvelle version au prochain lancement.',
+    guiSkewTitle: 'Mettre à jour l\'application de bureau',
+    guiSkewBody:
+      'Le backend a été mis à jour, mais l\'application de bureau n\'a pas été modifiée. Mettez à jour ou réinstallez l\'application de bureau Hermes (votre AppImage / .deb / .rpm) pour qu\'elle corresponde.',
     copy: 'Copier',
     copied: 'Copié',
     done: 'Terminé',
@@ -1930,6 +1934,7 @@ export const fr: Translations = {
     opening: 'Ouverture...',
     hide: 'Masquer',
     openPreview: 'Ouvrir l\'aperçu',
+    openInBrowser: 'Ouvrir dans le navigateur',
     sourceLineTitle: 'Clic pour sélectionner · shift-clic pour étendre · glisser vers le compositeur',
     source: 'SOURCE',
     renderedPreview: 'APERÇU',
