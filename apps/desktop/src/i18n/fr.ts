@@ -44,7 +44,9 @@ export const fr: Translations = {
 
   boot: {
     ready: 'Hermes Desktop est prêt',
-    desktopBootFailedWithMessage: message => `Échec du démarrage : ${message}`,
+    connectingPrefix: 'CONN',
+    connectingTail: 'EXION',
+    desktopBootFailedWithMessage: message => `Échec du démarrage d'Hermes Desktop : ${message}`,
     steps: {
       connectingGateway: 'Connexion à la passerelle locale',
       loadingSettings: 'Chargement des paramètres Hermes',
@@ -52,8 +54,6 @@ export const fr: Translations = {
       startingDesktopConnection: 'Démarrage de la connexion bureau',
       startingHermesDesktop: 'Démarrage de Hermes Desktop…'
     },
-    connectingPrefix: 'CONN',
-    connectingTail: 'EXION',
     errors: {
       backgroundExited: 'Le processus Hermes en arrière-plan s\'est arrêté.',
       backgroundExitedDuringStartup: 'Le processus Hermes en arrière-plan s\'est arrêté pendant le démarrage.',
@@ -1649,7 +1649,7 @@ export const fr: Translations = {
     manualPickedUp: 'Hermes utilisera la nouvelle version au prochain lancement.',
     guiSkewTitle: 'Mettre à jour l\'application de bureau',
     guiSkewBody:
-      'Le backend a été mis à jour, mais l\'application de bureau n\'a pas été modifiée. Mettez à jour ou réinstallez l\'application de bureau Hermes (votre AppImage / .deb / .rpm) pour qu\'elle corresponde.',
+      'Le backend a été mis à jour, mais l\'application de bureau n\'a pas changé. Mettez à jour ou réinstallez Hermes Desktop pour correspondre.',
     copy: 'Copier',
     copied: 'Copié',
     done: 'Terminé',
