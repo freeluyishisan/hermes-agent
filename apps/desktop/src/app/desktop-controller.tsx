@@ -192,6 +192,9 @@ function sessionsToKeep(scope?: string): Set<string> {
   return keep
 }
 
+const sessionProfileForScope = (profileScope: string): 'all' | string =>
+  profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
+
 export function DesktopController() {
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -199,6 +202,8 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  const profileScopeRef = useRef(ALL_PROFILES)
+  const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
@@ -213,6 +218,7 @@ export function DesktopController() {
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
+  profileScopeRef.current = profileScope
   // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
   // collapse both sidebars (without touching their stored open state) so the
   // hover-reveal overlay becomes the way in. Restores once it's wide again.
@@ -377,10 +383,23 @@ export function DesktopController() {
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const requestId = refreshMessagingSessionsRequestRef.current + 1
+    refreshMessagingSessionsRequestRef.current = requestId
+    const sessionProfile = sessionProfileForScope(profileScope)
+
+    setMessagingPlatformTotals({})
+
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
+
+      if (
+        refreshMessagingSessionsRequestRef.current !== requestId ||
+        sessionProfileForScope(profileScopeRef.current) !== sessionProfile
+      ) {
+        return
+      }
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
@@ -393,20 +412,37 @@ export function DesktopController() {
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
-    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
+    const sessionProfile = sessionProfileForScope(profileScope)
+
+    const inProfileScope = (s: SessionInfo) =>
+      sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
+
+    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfileScope(s)
+
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
-      source: platform
-    })
+    const result = await listAllProfileSessions(
+      loaded + SIDEBAR_SESSIONS_PAGE_SIZE,
+      1,
+      'exclude',
+      'recent',
+      sessionProfile,
+      {
+        source: platform
+      }
+    )
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+    if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      return
+    }
+
+    const incoming = result.sessions.filter(inPlatform)
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -415,7 +451,7 @@ export function DesktopController() {
 
     const total = result.total ?? incoming.length
     setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+  }, [profileScope])
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right
