@@ -1,6 +1,7 @@
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useState,
   useCallback,
   useRef,
@@ -13,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  ListFilter,
   MessageSquare,
   Search,
   Trash2,
@@ -70,12 +72,35 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
     cli: { icon: Terminal, color: "text-primary" },
+    tui: { icon: Terminal, color: "text-primary" },
     telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
     discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
     slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
     whatsapp: { icon: Globe, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
+    tool: { icon: Play, color: "text-warning" },
+    api_server: { icon: Globe, color: "text-muted-foreground" },
+    acp: { icon: Database, color: "text-muted-foreground" },
   };
+
+const AUTOMATION_SESSION_SOURCES = ["cron", "tool", "api_server", "acp"];
+
+type SessionFilterCategory = "chats" | "automation" | "all";
+
+function sourceLabel(source: string): string {
+  switch (source) {
+    case "api_server":
+      return "API server";
+    case "acp":
+      return "ACP";
+    case "cli":
+      return "CLI";
+    case "tui":
+      return "TUI";
+    default:
+      return source;
+  }
+}
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -387,7 +412,6 @@ function SessionRow({
   resumeInChatEnabled,
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
@@ -396,18 +420,24 @@ function SessionRow({
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isExpanded && messages === null && !loading) {
-      setLoading(true);
-      api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
-        .catch((err) => setError(String(err)))
-        .finally(() => setLoading(false));
-    }
-  }, [isExpanded, session.id, messages, loading]);
+    if (!isExpanded || messages !== null) return;
+    let cancelled = false;
+    api
+      .getSessionMessages(session.id)
+      .then((resp) => {
+        if (!cancelled) setMessages(resp.messages);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded, session.id, messages]);
 
+  const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source
-    ? SOURCE_CONFIG[session.source]
+    ? SOURCE_CONFIG[session.source] ?? (sourceKey ? SOURCE_CONFIG[sourceKey] : null)
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
@@ -430,7 +460,8 @@ function SessionRow({
   const actionButtons = (
     <>
       <Badge tone="outline" className="text-xs">
-        {session.source ?? "local"}
+        <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
+        {session.source ? sourceLabel(session.source) : "local"}
       </Badge>
 
       {resumeInChatEnabled && (
@@ -639,7 +670,7 @@ function SessionRow({
 
       {isExpanded && (
         <div className="min-w-0 border-t border-border bg-background/50 p-4">
-          {loading && (
+          {messages === null && !error && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
             </div>
@@ -729,6 +760,11 @@ export default function SessionsPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
   const [view, setView] = useState<SessionsView>("overview");
+  const [sessionCategory, setSessionCategory] =
+    useState<SessionFilterCategory>("chats");
+  const [selectedSources, setSelectedSources] = useState<string[]>([]);
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
+  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   // Count of empty (no-message, ended, non-archived) sessions across the
   // entire DB, populated by /api/sessions/empty/count. Used to:
   //   • hide the "Delete empty" button when there's nothing to clean up
@@ -762,6 +798,49 @@ export default function SessionsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
+
+  const sessionQueryOptions = useMemo(() => {
+    if (selectedSources.length > 0) {
+      return { sources: selectedSources };
+    }
+    if (sessionCategory === "chats") {
+      return { excludeSources: AUTOMATION_SESSION_SOURCES };
+    }
+    if (sessionCategory === "automation") {
+      return { sources: AUTOMATION_SESSION_SOURCES };
+    }
+    return {};
+  }, [selectedSources, sessionCategory]);
+
+  const sourceOptions = useMemo(() => {
+    const entries = Object.entries(stats?.by_source ?? {}).sort(
+      ([aSource, aCount], [bSource, bCount]) =>
+        bCount - aCount || sourceLabel(aSource).localeCompare(sourceLabel(bSource)),
+    );
+    const seen = new Set(entries.map(([source]) => source));
+    for (const source of selectedSources) {
+      if (!seen.has(source)) {
+        entries.unshift([source, 0]);
+        seen.add(source);
+      }
+    }
+    return entries;
+  }, [selectedSources, stats]);
+
+  const selectedSourceSet = useMemo(
+    () => new Set(selectedSources),
+    [selectedSources],
+  );
+
+  const sourceFilterLabel = useMemo(() => {
+    if (selectedSources.length === 0) {
+      return t.sessions.anySource;
+    }
+    if (selectedSources.length === 1) {
+      return sourceLabel(selectedSources[0]);
+    }
+    return `${selectedSources.length} sources`;
+  }, [selectedSources, t.sessions.anySource]);
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -806,6 +885,21 @@ export default function SessionsPage() {
     };
   }, [setEnd]);
 
+  useEffect(() => {
+    if (!sourceMenuOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!sourceMenuRef.current?.contains(event.target as Node)) {
+        setSourceMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [sourceMenuOpen]);
+
   const loadSessions = useCallback((p: number, silent = false) => {
     // ``silent`` skips the loading spinner so background refreshes
     // (triggered when the overview poll detects a new session from
@@ -813,7 +907,7 @@ export default function SessionsPage() {
     // scroll position.
     if (!silent) setLoading(true);
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
       .then((resp) => {
         setSessions(resp.sessions);
         setTotal(resp.total);
@@ -822,7 +916,7 @@ export default function SessionsPage() {
       .finally(() => {
         if (!silent) setLoading(false);
       });
-  }, []);
+  }, [sessionQueryOptions]);
 
   const loadStats = useCallback(() => {
     api
@@ -842,11 +936,21 @@ export default function SessionsPage() {
   // baseline without triggering a redundant reload (mount already loads).
   const newestSeenRef = useRef<string | null>(null);
   const pageRef = useRef(page);
-  pageRef.current = page;
 
   useEffect(() => {
-    loadSessions(page);
-    refreshEmptyCount();
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      loadSessions(page);
+      refreshEmptyCount();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [loadSessions, page, refreshEmptyCount]);
 
   useEffect(() => {
@@ -856,7 +960,7 @@ export default function SessionsPage() {
         .then(setStatus)
         .catch(() => {});
       api
-        .getSessions(50)
+        .getSessions(50, 0, sessionQueryOptions)
         .then((r) => {
           setOverviewSessions(r.sessions);
           // The dashboard server and a terminal CLI are separate
@@ -877,7 +981,7 @@ export default function SessionsPage() {
     loadOverview();
     const id = setInterval(loadOverview, 5000);
     return () => clearInterval(id);
-  }, [loadSessions]);
+  }, [loadSessions, sessionQueryOptions]);
 
   useEffect(() => {
     const el = logScrollRef.current;
@@ -902,6 +1006,7 @@ export default function SessionsPage() {
   const updateSearch = useCallback(
     (value: string) => {
       setSearch(value);
+      if (value.trim()) setView("list");
       clearSelection();
     },
     [clearSelection],
@@ -914,20 +1019,56 @@ export default function SessionsPage() {
     [clearSelection],
   );
 
+  const updateSessionCategory = useCallback(
+    (value: string) => {
+      setSessionCategory(value as SessionFilterCategory);
+      setSelectedSources([]);
+      setSourceMenuOpen(false);
+      setPage(0);
+      setExpandedId(null);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+
+  const toggleSourceFilter = useCallback(
+    (source: string) => {
+      setSelectedSources((current) =>
+        current.includes(source)
+          ? current.filter((item) => item !== source)
+          : [...current, source],
+      );
+      setPage(0);
+      setExpandedId(null);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+
+  const clearSourceFilters = useCallback(() => {
+    setSelectedSources([]);
+    setPage(0);
+    setExpandedId(null);
+    clearSelection();
+  }, [clearSelection]);
+
   // Debounced FTS search
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     if (!search.trim()) {
-      setSearchResults(null);
-      setSearching(false);
+      debounceRef.current = setTimeout(() => {
+        setSearchResults(null);
+        setSearching(false);
+      }, 0);
       return;
     }
 
-    setSearching(true);
     debounceRef.current = setTimeout(() => {
+      setSearching(true);
+      setSearchResults(null);
       api
-        .searchSessions(search.trim())
+        .searchSessions(search.trim(), sessionQueryOptions)
         .then((resp) => setSearchResults(resp.results))
         .catch(() => setSearchResults(null))
         .finally(() => setSearching(false));
@@ -936,7 +1077,7 @@ export default function SessionsPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [search]);
+  }, [search, sessionQueryOptions]);
 
   const sessionDelete = useConfirmDelete({
     onDelete: useCallback(
@@ -1188,14 +1329,11 @@ export default function SessionsPage() {
   if (searchResults) {
     for (const r of searchResults) {
       snippetMap.set(r.session_id, r.snippet);
+      snippetMap.set(r.id, r.snippet);
     }
   }
 
-  // When searching, filter sessions to those with FTS matches;
-  // when not searching, show all sessions
-  const filtered = searchResults
-    ? sessions.filter((s) => snippetMap.has(s.id))
-    : sessions;
+  const filtered = searchResults ?? sessions;
 
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
@@ -1208,11 +1346,7 @@ export default function SessionsPage() {
   const showOverviewTab =
     platformEntries.length > 0 || recentSessions.length > 0;
   const showList = view === "list" || isSearching || !showOverviewTab;
-  const showPagination = showList && !searchResults && total > PAGE_SIZE;
-
-  useEffect(() => {
-    if (isSearching) setView("list");
-  }, [isSearching]);
+  const showPagination = showList && !isSearching && total > PAGE_SIZE;
 
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
@@ -1371,12 +1505,11 @@ export default function SessionsPage() {
             <span className="text-xs text-muted-foreground">Messages</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              {Object.entries(stats.by_source).map(([src, count]) => (
-                <Badge key={src} tone="outline" className="text-xs">
-                  {src}: {count}
-                </Badge>
-              ))}
+            <div className="flex flex-col">
+              <span className="text-lg font-semibold tabular-nums leading-none">
+                {Object.keys(stats.by_source).length}
+              </span>
+              <span className="text-xs text-muted-foreground">Sources</span>
             </div>
           )}
         </div>
@@ -1471,6 +1604,102 @@ export default function SessionsPage() {
       {(showOverviewTab && !isSearching) || showList ? (
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
+            <Segmented
+              className="w-fit shrink-0"
+              size="md"
+              value={sessionCategory}
+              onChange={updateSessionCategory}
+              options={[
+                { value: "chats", label: t.sessions.filterChats },
+                { value: "automation", label: t.sessions.filterAutomation },
+                { value: "all", label: t.sessions.filterAll },
+              ]}
+            />
+
+            <div ref={sourceMenuRef} className="relative shrink-0">
+              <Button
+                outlined
+                size="sm"
+                prefix={<ListFilter />}
+                suffix={
+                  <ChevronDown
+                    className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
+                  />
+                }
+                className="h-8 min-w-[10rem] max-w-[14rem] justify-between text-xs"
+                aria-label={t.sessions.sourceFilter}
+                aria-expanded={sourceMenuOpen}
+                onClick={() => setSourceMenuOpen((open) => !open)}
+              >
+                <span className="min-w-0 truncate">{sourceFilterLabel}</span>
+              </Button>
+
+              {sourceMenuOpen && (
+                <div
+                  className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
+                >
+                  <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">
+                      {t.sessions.sourceFilter}
+                    </span>
+                    {selectedSources.length > 0 && (
+                      <Button
+                        ghost
+                        size="xs"
+                        onClick={clearSourceFilters}
+                        className="shrink-0"
+                      >
+                        {t.common.clear}
+                      </Button>
+                    )}
+                  </div>
+                  <div className="max-h-64 overflow-y-auto p-1">
+                    {sourceOptions.length === 0 ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">
+                        {t.sessions.anySource}
+                      </div>
+                    ) : (
+                      sourceOptions.map(([source, count]) => {
+                        const selected = selectedSourceSet.has(source);
+                        const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal;
+                        const sourceColor =
+                          SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
+
+                        return (
+                          <div
+                            key={source}
+                            className="flex min-w-0 items-center gap-2 px-2 py-1.5 hover:bg-secondary/40"
+                          >
+                            <Checkbox
+                              checked={selected}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleSourceFilter(source);
+                              }}
+                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                            />
+                            <button
+                              type="button"
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
+                              onClick={() => toggleSourceFilter(source)}
+                            >
+                              <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
+                              <span className="min-w-0 flex-1 truncate">
+                                {sourceLabel(source)}
+                              </span>
+                              <span className="shrink-0 tabular-nums text-muted-foreground">
+                                {count}
+                              </span>
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
             {showOverviewTab && !isSearching && (
               <Segmented
                 className="w-fit shrink-0"
@@ -1611,9 +1840,13 @@ export default function SessionsPage() {
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Clock className="h-8 w-8 mb-3 opacity-40" />
             <p className="text-sm font-medium">
-              {search ? t.sessions.noMatch : t.sessions.noSessions}
+              {search
+                ? t.sessions.noMatch
+                : selectedSources.length > 0 || sessionCategory !== "chats"
+                  ? t.sessions.noSessionsInFilter
+                  : t.sessions.noSessions}
             </p>
-            {!search && (
+            {!search && sessionCategory === "chats" && selectedSources.length === 0 && (
               <p className="text-xs mt-1 text-text-tertiary">
                 {t.sessions.startConversation}
               </p>
@@ -1701,7 +1934,7 @@ export default function SessionsPage() {
                       className="shrink-0 self-start text-xs sm:self-center"
                     >
                       <Database className="mr-1 h-3 w-3" />
-                      {s.source ?? "local"}
+                      {s.source ? sourceLabel(s.source) : "local"}
                     </Badge>
                   </div>
                 ))}
