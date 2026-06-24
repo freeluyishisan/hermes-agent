@@ -2373,6 +2373,17 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Human-readable progress heartbeats for long-running cron jobs.
+        # enabled: false/off disables; auto enables conservative likely-long jobs;
+        # true/all enables every cron run, including no_agent scripts.
+        # Env overrides: HERMES_CRON_PROGRESS_ENABLED,
+        # HERMES_CRON_PROGRESS_INITIAL_DELAY, HERMES_CRON_PROGRESS_INTERVAL.
+        "progress": {
+            "enabled": "auto",
+            "initial_delay_seconds": 90,
+            "interval_seconds": 120,
+            "edit_in_place": True,
+        },
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

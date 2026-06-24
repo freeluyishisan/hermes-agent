@@ -732,6 +732,35 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _normalize_progress(progress: Any) -> Optional[Dict[str, Any]]:
+    """Normalize optional per-job cron progress overrides.
+
+    Stored shape mirrors ``cron.progress`` config but only keeps known fields:
+    ``enabled``, ``initial_delay_seconds``, ``interval_seconds``,
+    ``edit_in_place``, and ``state_path``. ``None`` / empty dict clears the
+    override. A bare bool or string is shorthand for ``{"enabled": value}``.
+    """
+    if progress is None:
+        return None
+    if isinstance(progress, bool):
+        return {"enabled": progress}
+    if isinstance(progress, str):
+        text = progress.strip()
+        return {"enabled": text} if text else None
+    if not isinstance(progress, dict):
+        raise ValueError("Cron progress override must be a bool, string, or object")
+
+    allowed = {
+        "enabled",
+        "initial_delay_seconds",
+        "interval_seconds",
+        "edit_in_place",
+        "state_path",
+    }
+    normalized = {k: v for k, v in progress.items() if k in allowed and v is not None}
+    return normalized or None
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -749,6 +778,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    progress: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -793,6 +823,9 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        progress: Optional per-job progress override. Mirrors ``cron.progress``
+                config; bool/string is shorthand for the ``enabled`` field.
+                None means inherit global config.
 
     Returns:
         The created job dict
@@ -827,6 +860,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_progress = _normalize_progress(progress)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -880,6 +914,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "progress": normalized_progress,
     }
 
     with _jobs_lock():
@@ -970,6 +1005,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "progress" in updates:
+                updates["progress"] = _normalize_progress(updates["progress"])
 
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
