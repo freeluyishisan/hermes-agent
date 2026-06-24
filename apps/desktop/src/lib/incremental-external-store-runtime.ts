@@ -9,6 +9,8 @@ import {
   type AssistantRuntime,
   type ExternalStoreAdapter,
   type ThreadMessage,
+  fromThreadMessageLike,
+  generateId,
   useRuntimeAdapters
 } from '@assistant-ui/react'
 import { useEffect, useMemo, useState } from 'react'
@@ -135,10 +137,16 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
     }
 
     if (hasUpcomingMessage(isRunning, messages)) {
-      self._assistantOptimisticId = this.repository.appendOptimisticMessage(messages.at(-1)?.id ?? null, {
-        role: 'assistant',
-        content: []
-      })
+      const optimisticId = generateId()
+      this.repository.addOrUpdateMessage(
+        messages.at(-1)?.id ?? null,
+        fromThreadMessageLike(
+          { role: 'assistant', content: [], metadata: { isOptimistic: true } },
+          optimisticId,
+          { type: 'running' }
+        )
+      )
+      self._assistantOptimisticId = optimisticId
     }
 
     this.repository.resetHead(self._assistantOptimisticId ?? messages.at(-1)?.id ?? null)
