@@ -48,7 +48,7 @@ from tools.code_execution_tool import (
 )
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None, **kwargs):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":
         cmd = function_args.get("command", "")
@@ -328,7 +328,7 @@ else:
     print(f"OK {N}/{N}")
 '''
 
-        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+        def slow_mock(function_name, function_args, task_id=None, user_task=None, **kwargs):
             import time as _t
             if function_name == "terminal":
                 _t.sleep(0.05)  # ensure requests overlap on the socket
@@ -1004,6 +1004,126 @@ for i in range(15000):
         if "TRUNCATED" in output:
             self.assertIn("chars omitted", output)
             self.assertIn("total", output)
+
+
+class TestRpcSessionIdForwarding(unittest.TestCase):
+    """Regression tests for #51931: nested tool calls (invoked by
+    execute_code via RPC) must receive the parent's session_id so plugin
+    hooks (on_pre_tool_call / on_post_tool_call) can correlate them with
+    the originating turn."""
+
+    def test_rpc_server_loop_forwards_session_id(self):
+        """_rpc_server_loop must pass session_id to handle_function_call."""
+        from tools.code_execution_tool import _rpc_server_loop
+
+        captured = {}
+
+        def fake_handle_function_call(tool_name, tool_args, task_id=None,
+                                      session_id=None, **kwargs):
+            captured["session_id"] = session_id
+            return json.dumps({"status": "ok"})
+
+        # Build a minimal mock socket that delivers one request then closes.
+        server_sock = MagicMock()
+        conn = MagicMock()
+        # Simulate one JSON request line then EOF (b"" ends the loop).
+        request = json.dumps({"tool": "read_file", "args": {"path": "/tmp/x"}})
+        conn.recv.side_effect = [(request + "\n").encode(), b""]
+        server_sock.accept.return_value = (conn, ("127.0.0.1", 12345))
+
+        stop_event = threading.Event()
+        with patch("model_tools.handle_function_call",
+                   side_effect=fake_handle_function_call):
+            _rpc_server_loop(
+                server_sock, "test-task", [], [0], 100,
+                frozenset({"read_file"}), stop_event,
+                session_id="test-session-123",
+            )
+
+        self.assertEqual(captured.get("session_id"), "test-session-123",
+                         "session_id must be forwarded to handle_function_call")
+
+    def test_rpc_server_loop_defaults_session_id_empty(self):
+        """When session_id is not provided, it defaults to empty string
+        (backward compatibility — no crash)."""
+        from tools.code_execution_tool import _rpc_server_loop
+
+        captured = {}
+
+        def fake_handle_function_call(tool_name, tool_args, task_id=None,
+                                      session_id=None, **kwargs):
+            captured["session_id"] = session_id
+            return json.dumps({"status": "ok"})
+
+        server_sock = MagicMock()
+        conn = MagicMock()
+        request = json.dumps({"tool": "read_file", "args": {"path": "/tmp/x"}})
+        conn.recv.side_effect = [(request + "\n").encode(), b""]
+        server_sock.accept.return_value = (conn, ("127.0.0.1", 12345))
+
+        stop_event = threading.Event()
+        with patch("model_tools.handle_function_call",
+                   side_effect=fake_handle_function_call):
+            _rpc_server_loop(
+                server_sock, "test-task", [], [0], 100,
+                frozenset({"read_file"}), stop_event,
+                # session_id not passed — should default to ""
+            )
+
+        self.assertEqual(captured.get("session_id"), "",
+                         "session_id should default to empty string")
+
+    def test_rpc_poll_loop_forwards_session_id(self):
+        """_rpc_poll_loop (remote backend) must also forward session_id."""
+        from tools.code_execution_tool import _rpc_poll_loop
+
+        captured = {}
+
+        def fake_handle_function_call(tool_name, tool_args, task_id=None,
+                                      session_id=None, **kwargs):
+            captured["session_id"] = session_id
+            return json.dumps({"status": "ok"})
+
+        # Build a mock env that returns one request file, then the request
+        # content, then marks it done.
+        env = MagicMock()
+        request = json.dumps({"tool": "read_file", "args": {"path": "/tmp/x"}})
+
+        # First ls: finds one request file. Subsequent ls: empty (no more).
+        ls_call_count = [0]
+
+        def env_execute(cmd, **kwargs):
+            if cmd.startswith("ls "):
+                ls_call_count[0] += 1
+                if ls_call_count[0] == 1:
+                    return {"output": "/rpc/req_001\n"}
+                return {"output": ""}
+            if cmd.startswith("cat "):
+                return {"output": request}
+            if cmd.startswith("rm "):
+                return {"output": ""}
+            return {"output": ""}
+
+        env.execute.side_effect = env_execute
+
+        stop_event = threading.Event()
+
+        def fake_handle_and_stop(*args, **kwargs):
+            result = fake_handle_function_call(*args, **kwargs)
+            # Stop the poll loop after the first dispatch.
+            stop_event.set()
+            return result
+
+        with patch("model_tools.handle_function_call",
+                   side_effect=fake_handle_and_stop):
+            _rpc_poll_loop(
+                env, "/rpc", "test-task", [], [0], 100,
+                frozenset({"read_file"}), stop_event,
+                session_id="remote-session-456",
+            )
+
+        self.assertEqual(captured.get("session_id"), "remote-session-456",
+                         "session_id must be forwarded in remote RPC path too")
 
 
 if __name__ == "__main__":
