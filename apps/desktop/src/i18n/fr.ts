@@ -374,7 +374,32 @@ export const fr: Translations = {
       installError: 'Impossible d\'installer ce thème.',
       installed: name => `« ${name} » installé.`,
       removeTheme: 'Supprimer le thème',
-      importedBadge: 'Importé'
+      importedBadge: 'Importé',
+      pet: {
+        title: 'Mascotte',
+        intro:
+          'Adoptez une mascotte animée de petdex qui flotte au-dessus de l\'application et réagit à ce que fait Hermes — elle court quand les outils s\'exécutent, célèbre en cas de succès, boude en cas d\'erreur.',
+        restartHint:
+          'Les mascottes nécessitent un redémarrage rapide — l\'application en cours a démarré avant que cette fonctionnalité ne soit ajoutée. Quittez et rouvrez Hermes, puis revenez ici.',
+        on: 'Activée',
+        off: 'Désactivée',
+        scaleTitle: 'Taille',
+        scaleDesc: 'Redimensionnez la mascotte flottante. S\'applique partout instantanément.',
+        chooseTitle: 'Choisir une mascotte',
+        chooseDesc: 'En sélectionner une l\'installe (si nécessaire) et l\'active.',
+        searchPlaceholder: 'Rechercher des mascottes…',
+        unreachable: 'Impossible de joindre la galerie petdex. Vérifiez votre connexion et rouvrez cette page.',
+        noMatch: query => `Aucune mascotte ne correspond à « ${query} ».`,
+        installedTag: 'installée',
+        countCapped: (cap, total) => `Affichage de ${cap} sur ${total} — tapez pour affiner.`,
+        count: n => `${n} mascotte${n === 1 ? '' : 's'}.`,
+        uninstall: name => `Désinstaller ${name}`,
+        adoptFailed: slug => `Impossible d'adopter ${slug}`,
+        uninstallFailed: slug => `Impossible de désinstaller ${slug}`,
+        noneAvailable: 'Aucune mascotte disponible pour le moment.',
+        turnOnFailed: 'Impossible d\'activer la mascotte.',
+        turnOffFailed: 'Impossible de désactiver la mascotte.'
+      }
     },
     fieldLabels: defineFieldCopy({
       model: 'Modèle par défaut',
@@ -993,6 +1018,20 @@ export const fr: Translations = {
     settings: 'Paramètres',
     changeTheme: 'Changer le thème...',
     changeColorMode: 'Changer le mode de couleur...',
+    pets: {
+      title: 'Mascottes',
+      placeholder: 'Rechercher des mascottes…',
+      loading: 'Chargement de la galerie petdex…',
+      error: 'Impossible de joindre la galerie petdex.',
+      staleBackend: 'Redémarrez Hermes pour utiliser les mascottes — le backend est antérieur à cette fonctionnalité.',
+      empty: 'Aucune mascotte correspondante.',
+      turnOff: 'Désactiver',
+      turnOn: 'Activer',
+      installed: 'Installée',
+      adoptFailed: 'Impossible d\'adopter cette mascotte.',
+      toggleFailed: 'Impossible d\'activer/désactiver la mascotte.',
+      noneAvailable: 'Aucune mascotte disponible — choisissez-en une ci-dessous à installer.'
+    },
     installTheme: {
       title: 'Installer un thème...',
       placeholder: 'Rechercher dans le Marketplace VS Code...',
