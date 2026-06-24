@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -27,7 +27,6 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
-import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { AutomationBlueprints } from "@/components/AutomationBlueprints";
@@ -182,8 +181,6 @@ export default function CronPage() {
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t, locale } = useI18n();
-  const { setEnd } = usePageHeader();
-
   // Translation surface for the human-readable schedule describer.
   // English ordinals are a special case ("1st", "2nd", "23rd"); every
   // other locale falls back to the plain numeric form, which avoids
@@ -477,22 +474,6 @@ export default function CronPage() {
     ),
   });
 
-  // Put "Create" button in page header
-  useLayoutEffect(() => {
-    setEnd(
-      <Button
-        className="uppercase"
-        size="sm"
-        onClick={() => setCreateModalOpen(true)}
-      >
-        {t.common.create}
-      </Button>,
-    );
-    return () => {
-      setEnd(null);
-    };
-  }, [setEnd, t.common.create, loading]);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -510,14 +491,23 @@ export default function CronPage() {
       <PluginSlot name="cron:top" />
       <Toast toast={toast} />
 
-      <Segmented
-        value={view}
-        onChange={(v) => setView(v as "jobs" | "blueprints")}
-        options={[
-          { value: "jobs", label: "Jobs" },
-          { value: "blueprints", label: "Blueprints" },
-        ]}
-      />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Segmented
+          value={view}
+          onChange={(v) => setView(v as "jobs" | "blueprints")}
+          options={[
+            { value: "jobs", label: "Jobs" },
+            { value: "blueprints", label: "Blueprints" },
+          ]}
+        />
+        <Button
+          className="uppercase sm:shrink-0"
+          size="sm"
+          onClick={() => setCreateModalOpen(true)}
+        >
+          {t.common.create}
+        </Button>
+      </div>
 
       {view === "blueprints" && (
         <AutomationBlueprints
