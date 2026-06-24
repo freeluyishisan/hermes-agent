@@ -1430,14 +1430,17 @@ class TestContextEngineToolsetGate:
                 if isinstance(t, dict)
             }
             for _schema in compressor.get_tool_schemas():
+                if isinstance(_schema, dict) and _schema.get("type") == "function" and isinstance(_schema.get("function"), dict):
+                    _schema = _schema["function"]
                 _tname = _schema.get("name", "")
-                if _tname and _tname in _existing:
+                if not _tname:
+                    continue
+                if _tname in _existing:
                     continue
                 tools.append({"type": "function", "function": _schema})
-                if _tname:
-                    valid_tool_names.add(_tname)
-                    engine_tool_names.add(_tname)
-                    _existing.add(_tname)
+                valid_tool_names.add(_tname)
+                engine_tool_names.add(_tname)
+                _existing.add(_tname)
 
         return tools, valid_tool_names, engine_tool_names
 
@@ -1487,3 +1490,80 @@ class TestContextEngineToolsetGate:
         """Gate is moot without a context_compressor."""
         tools, names, engine_names = self._run_context_engine_injection(None, None)
         assert tools == []
+
+    def test_already_wrapped_schema_is_unwrapped(self):
+        """A schema already in {'type':'function','function':{...}} form is unwrapped
+        before registration, not double-wrapped. Strict providers (e.g. DeepSeek)
+        reject double-wrapped entries with HTTP 400."""
+        wrapped_schema = {"type": "function", "function": {
+            "name": "lcm_grep", "description": "grep", "parameters": {}
+        }}
+        c = self._FakeCompressor([wrapped_schema])
+        tools, names, engine_names = self._run_context_engine_injection(None, c)
+
+        assert "lcm_grep" in engine_names
+        assert len(tools) == 1
+        fn = tools[0]["function"]
+        assert fn.get("name") == "lcm_grep"
+        assert "type" not in fn, "double-wrapped — function block must not have a 'type' key"
+
+    def test_nameless_schema_is_skipped(self):
+        """A schema with no 'name' (malformed) is silently skipped rather than
+        appended as an un-routable tool that causes provider 400s."""
+        c = self._FakeCompressor([{"description": "no name here", "parameters": {}}])
+        tools, names, engine_names = self._run_context_engine_injection(None, c)
+        assert tools == []
+        assert engine_names == set()
+
+
+class TestSchemaDoubleWrapFix:
+    """Regression tests for double-wrapping of already-OpenAI-form tool schemas.
+
+    Both memory providers and context engines may return schemas already in
+    {"type":"function","function":{...}} form. Before the fix, consumers
+    wrapped them a second time, producing a nameless tool that strict providers
+    (e.g. DeepSeek) rejected with HTTP 400 on every request.
+    """
+
+    def _mgr_with_wrapped_tools(self, *tool_names):
+        """Provider that returns already-wrapped schemas (the incorrect-but-real form)."""
+        mgr = MemoryManager()
+        wrapped = [
+            {"type": "function", "function": {"name": n, "description": n, "parameters": {}}}
+            for n in tool_names
+        ]
+        p = FakeMemoryProvider("ext", tools=wrapped)
+        mgr.add_provider(p)
+        return mgr
+
+    def test_get_all_tool_schemas_unwraps(self):
+        """MemoryManager.get_all_tool_schemas() normalises pre-wrapped entries."""
+        mgr = self._mgr_with_wrapped_tools("recall", "store")
+        schemas = mgr.get_all_tool_schemas()
+        names = {s["name"] for s in schemas}
+        assert names == {"recall", "store"}
+        for s in schemas:
+            assert "type" not in s, f"schema for '{s.get('name')}' is still wrapped"
+
+    def test_routing_index_unwraps(self):
+        """add_provider() indexes wrapped schemas correctly so routing works."""
+        mgr = self._mgr_with_wrapped_tools("recall")
+        assert mgr.has_tool("recall"), "wrapped schema not indexed — routing will fail"
+
+    def test_inject_memory_provider_tools_unwraps(self):
+        """inject_memory_provider_tools() normalises pre-wrapped schemas so the
+        inserted tool is callable (not an un-routable double-wrapped entry)."""
+        mgr = self._mgr_with_wrapped_tools("recall")
+        fake_agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+        )
+        inject_memory_provider_tools(fake_agent)
+
+        assert "recall" in fake_agent.valid_tool_names
+        assert len(fake_agent.tools) == 1
+        fn = fake_agent.tools[0]["function"]
+        assert fn.get("name") == "recall"
+        assert "type" not in fn, "double-wrapped — strict providers will 400"

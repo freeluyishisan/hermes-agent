@@ -95,6 +95,8 @@ def inject_memory_provider_tools(agent: Any) -> int:
     for schema in get_schemas():
         if not isinstance(schema, dict):
             continue
+        if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+            schema = schema["function"]
         tool_name = schema.get("name", "")
         if not tool_name or tool_name in existing_tool_names:
             continue
@@ -371,6 +373,8 @@ class MemoryManager:
 
         # Index tool names → provider for routing
         for schema in provider.get_tool_schemas():
+            if isinstance(schema, dict) and schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+                schema = schema["function"]
             tool_name = schema.get("name", "")
             if tool_name in _core_tool_names:
                 logger.warning(
@@ -659,6 +663,8 @@ class MemoryManager:
         for provider in self._providers:
             try:
                 for schema in provider.get_tool_schemas():
+                    if isinstance(schema, dict) and schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+                        schema = schema["function"]
                     name = schema.get("name", "")
                     if name in _core_tool_names:
                         continue

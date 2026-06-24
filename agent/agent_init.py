@@ -1622,15 +1622,17 @@ def init_agent(
             if isinstance(t, dict)
         }
         for _schema in agent.context_compressor.get_tool_schemas():
+            if isinstance(_schema, dict) and _schema.get("type") == "function" and isinstance(_schema.get("function"), dict):
+                _schema = _schema["function"]
             _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
+            if not _tname:
+                continue  # skip nameless schemas — no way to route calls
+            if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
-            _wrapped = {"type": "function", "function": _schema}
-            agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                agent._context_engine_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
+            agent.tools.append({"type": "function", "function": _schema})
+            agent.valid_tool_names.add(_tname)
+            agent._context_engine_tool_names.add(_tname)
+            _existing_tool_names.add(_tname)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:
