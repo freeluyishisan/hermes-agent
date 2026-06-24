@@ -129,20 +129,23 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
 
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
-    const clock = setInterval(() => setNow(Date.now()), 1000)
+    const clock = startedAt ? setInterval(() => setNow(Date.now()), 1000) : null
     // Verb timer is gated on `showVerb` — `unicode` style hides the verb
     // entirely, so cycling `verbTick` would be an avoidable re-render.
     const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
       clearInterval(glyph)
-      clearInterval(clock)
+
+      if (clock !== null) {
+        clearInterval(clock)
+      }
 
       if (verb !== null) {
         clearInterval(verb)
       }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, showVerb, startedAt])
 
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
@@ -421,6 +424,7 @@ export function StatusRule({
   liveSessionCount,
   sessionStartedAt,
   showCost,
+  showLiveTimers = true,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -461,7 +465,7 @@ export function StatusRule({
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
   const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+    ? busyIndicatorWidth(indicatorStyle, showLiveTimers && turnStartedAt != null)
     : showNotice
       ? noticeReserve
       : stringWidth(status)
@@ -482,6 +486,7 @@ export function StatusRule({
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
+
   const fits = (w: number) => {
     if (tailBudget >= w) {
       tailBudget -= w
@@ -495,6 +500,7 @@ export function StatusRule({
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
   const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
@@ -505,11 +511,14 @@ export function StatusRule({
       : ''
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
-  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+  const showDuration = showLiveTimers && segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
-  const showIdle = segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+  const showIdle =
+    showLiveTimers && segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
@@ -544,7 +553,7 @@ export function StatusRule({
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+            <FaceTicker color={statusColor} startedAt={showLiveTimers ? turnStartedAt : null} style={indicatorStyle} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {status}
@@ -773,6 +782,7 @@ interface StatusRuleProps {
   notice?: Notice | null
   sessionStartedAt?: null | number
   showCost: boolean
+  showLiveTimers?: boolean
   status: string
   statusColor: string
   t: Theme
