@@ -145,7 +145,7 @@ class TestChildSystemPrompt(unittest.TestCase):
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
-        result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
+        result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution", "messaging", "cronjob"])
         self.assertEqual(sorted(result), ["file", "terminal"])
 
     def test_preserves_allowed_toolsets(self):
@@ -155,6 +155,79 @@ class TestStripBlockedTools(unittest.TestCase):
     def test_empty_input(self):
         result = _strip_blocked_tools([])
         self.assertEqual(result, [])
+
+    def test_removes_messaging_and_cronjob(self):
+        """messaging (send_message) and cronjob must be stripped from children."""
+        result = _strip_blocked_tools(
+            ["terminal", "file", "messaging", "cronjob", "web"]
+        )
+        self.assertIn("terminal", result)
+        self.assertIn("file", result)
+        self.assertIn("web", result)
+        self.assertNotIn("messaging", result)
+        self.assertNotIn("cronjob", result)
+
+    def test_expands_composite_and_strips_blocked(self):
+        """Composite toolsets like hermes-cli are expanded to individual
+        toolsets, and all blocked ones are stripped — including other
+        composites that bundle blocked tools."""
+        from toolsets import resolve_toolset
+        from tools.delegate_tool import DELEGATE_BLOCKED_TOOLS
+
+        result = _strip_blocked_tools(["hermes-cli"])
+        # hermes-cli should be expanded, not preserved as-is
+        self.assertNotIn("hermes-cli", result,
+                         "hermes-cli should be expanded to individual toolsets")
+        # Blocked toolsets must be absent
+        self.assertNotIn("messaging", result)
+        self.assertNotIn("cronjob", result)
+        self.assertNotIn("delegation", result)
+        self.assertNotIn("clarify", result)
+        self.assertNotIn("memory", result)
+        self.assertNotIn("code_execution", result)
+        # Other composites must NOT re-enter via subset matching
+        for ts in result:
+            self.assertFalse(ts.startswith("hermes-"),
+                             f"composite {ts} should not re-enter expanded result")
+        # Non-blocked individual toolsets should be present
+        self.assertIn("terminal", result)
+        self.assertIn("file", result)
+        self.assertIn("web", result)
+        # Resolved tools must not contain any blocked tool
+        all_tools = set()
+        for ts in result:
+            all_tools.update(resolve_toolset(ts))
+        self.assertTrue(
+            DELEGATE_BLOCKED_TOOLS.isdisjoint(all_tools),
+            f"blocked tools still present: {DELEGATE_BLOCKED_TOOLS & all_tools}"
+        )
+
+
+class TestChildAgentDisabledToolsets(unittest.TestCase):
+    def test_build_child_agent_passes_disabled_toolsets(self):
+        """_build_child_agent must pass all blocked toolsets as disabled_toolsets
+        so that blocked tools are subtracted even from composite toolsets."""
+        from tools.delegate_tool import _DELEGATE_BLOCKED_TOOLSETS
+
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["hermes-cli"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            _build_child_agent(
+                task_index=0,
+                goal="test disabled_toolsets",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(
+                kwargs.get("disabled_toolsets"), sorted(_DELEGATE_BLOCKED_TOOLSETS),
+                "child AIAgent must disable all blocked toolsets"
+            )
 
 
 class TestDelegateTask(unittest.TestCase):
@@ -898,7 +971,7 @@ class TestSubagentCostRollup(unittest.TestCase):
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
-        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code", "cronjob"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):

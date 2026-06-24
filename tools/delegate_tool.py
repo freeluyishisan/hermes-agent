@@ -49,6 +49,22 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "execute_code",  # children should reason step-by-step, not write scripts
+        "cronjob",  # no persistent scheduled jobs outliving the delegation
+    ]
+)
+
+# Toolset names whose constituent tools overlap with DELEGATE_BLOCKED_TOOLS.
+# Used in _strip_blocked_tools() and passed as disabled_toolsets to child agents
+# so that blocked tools are never available to delegated children — even when
+# the parent uses a composite toolset (e.g. ``hermes-cli``) that bundles them.
+_DELEGATE_BLOCKED_TOOLSETS = frozenset(
+    [
+        "clarify",         # clarify
+        "code_execution",  # execute_code
+        "cronjob",         # cronjob
+        "delegation",      # delegate_task
+        "memory",          # memory
+        "messaging",       # send_message
     ]
 )
 
@@ -766,14 +782,63 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
-    blocked_toolset_names = {
-        "delegation",
-        "clarify",
-        "memory",
-        "code_execution",
-    }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+    """Remove blocked toolsets, expanding composite toolsets first.
+
+    Composite toolsets like ``hermes-cli`` bundle individual toolsets
+    (e.g. ``messaging``, ``cronjob``).  We expand composites to their
+    constituent toolsets, strip the blocked ones, and return the
+    remaining individual toolset names.  This ensures that children
+    never inherit ``send_message``, ``cronjob``, ``delegate_task``,
+    ``clarify``, ``memory``, or ``execute_code`` even when the parent
+    uses a composite toolset.
+    """
+    blocked_toolset_names = _DELEGATE_BLOCKED_TOOLSETS
+
+    # Step 1: Separate toolsets that contain blocked tools (need expansion)
+    # from clean toolsets (pass through unchanged).
+    needs_expansion: List[str] = []
+    clean: List[str] = []
+    for ts_name in toolsets:
+        if ts_name in blocked_toolset_names:
+            continue  # already blocked — skip
+        ts_def = TOOLSETS.get(ts_name)
+        ts_tools = set(ts_def.get("tools", [])) if ts_def else set()
+        if ts_tools & DELEGATE_BLOCKED_TOOLS:
+            # This toolset contains blocked tools — needs expansion
+            needs_expansion.append(ts_name)
+        else:
+            clean.append(ts_name)
+
+    # Step 2: Expand composite toolsets that contain blocked tools.
+    # Collect all their tool names, then find individual toolsets that
+    # are subsets.  Exclude blocked toolsets and all composites from
+    # re-addition — composites bundle blocked tools and must not
+    # re-enter the child's enabled toolsets.
+    expanded_set: set[str] = set()
+    composite_names = set(needs_expansion)
+    if needs_expansion:
+        all_expanded_tools: set[str] = set()
+        for ts_name in needs_expansion:
+            ts_def = TOOLSETS.get(ts_name)
+            if ts_def:
+                all_expanded_tools.update(ts_def.get("tools", []))
+
+        for ts_name, ts_def in TOOLSETS.items():
+            if ts_name in blocked_toolset_names or ts_name in composite_names:
+                continue
+            ts_tools = set(ts_def.get("tools", []))
+            if not ts_tools:
+                continue
+            # Exclude toolsets whose tools overlap with blocked tools —
+            # this prevents composites like hermes-api-server from
+            # re-entering the result via subset matching.
+            if ts_tools & DELEGATE_BLOCKED_TOOLS:
+                continue
+            if ts_tools.issubset(all_expanded_tools):
+                expanded_set.add(ts_name)
+
+    result = list(dict.fromkeys(clean + sorted(expanded_set)))
+    return [t for t in result if t not in blocked_toolset_names]
 
 
 def _build_child_progress_callback(
@@ -1230,6 +1295,7 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
+        disabled_toolsets=sorted(_DELEGATE_BLOCKED_TOOLSETS),
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
