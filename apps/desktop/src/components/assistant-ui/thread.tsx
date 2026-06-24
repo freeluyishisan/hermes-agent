@@ -351,7 +351,7 @@ const AssistantMessage: FC<{
       >
         {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {isRunning && <StreamStallIndicator />}
+        {isRunning && <StreamStallIndicator messageId={messageId} />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -409,6 +409,15 @@ const CompactionHint: FC = () => (
   <span className="shimmer min-w-0 truncate text-muted-foreground/55">{COMPACTION_LABEL}</span>
 )
 
+// ResponseLoadingIndicator only appears briefly at the start of a turn
+// (before the assistant produces any output).  Unlike StreamStallIndicator
+// below it does not survive the assistant message lifecycle, and a
+// session-scoped timerKey would persist across turns (making later mounts
+// show "session duration" instead of time-since-current-loading-started).
+// Use the anonymous (no-key) mode so each mount starts fresh — the
+// overlay-route unmount problem (see StreamStallIndicator fix below) is
+// less impactful here because the indicator is only visible for a few
+// seconds per turn anyway.
 const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
   const elapsed = useElapsedSeconds()
@@ -469,7 +478,7 @@ const STREAM_STALL_S = 2
 // Subscribes to the activity signal ITSELF (rather than taking it as a prop)
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
-const StreamStallIndicator: FC = () => {
+const StreamStallIndicator: FC<{ messageId: string }> = ({ messageId }) => {
   const activity = useAuiState(s => {
     let textLength = 0
 
@@ -499,7 +508,11 @@ const StreamStallIndicator: FC = () => {
   }, [activity])
 
   const active = (stalled || compacting) && !awaitingInput
-  const elapsed = useElapsedSeconds(active)
+  // Key by messageId so the timer survives the indicator's own stall cycles
+  // (return null when !active causes a remount every ~2s) AND the unmount/
+  // remount when an overlay route navigates away from the chat. Same fix
+  // shape as ResponseLoadingIndicator above.
+  const elapsed = useElapsedSeconds(active, `stream-stall:${messageId}`)
 
   if (!active) {
     return null
