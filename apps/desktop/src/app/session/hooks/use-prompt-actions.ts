@@ -733,7 +733,16 @@ export function usePromptActions({
 
       if (!sessionId) {
         try {
-          sessionId = await createBackendSessionForSend(visibleText)
+          const storedSessionId = selectedStoredSessionIdRef.current
+
+          if (storedSessionId) {
+            await Promise.resolve(resumeStoredSession(storedSessionId))
+            sessionId = activeSessionIdRef.current
+          }
+
+          if (!sessionId) {
+            sessionId = await createBackendSessionForSend(visibleText)
+          }
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
