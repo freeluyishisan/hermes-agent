@@ -8,19 +8,22 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import codecs
 import contextvars
 import fnmatch
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
 import unicodedata
 from typing import Optional
-from hermes_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
+from hermes_cli.config import cfg_get
+from tools.ansi_strip import strip_ansi
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -29,6 +32,114 @@ logger = logging.getLogger(__name__)
 # would allow any skill running inside the process to set this variable and
 # instantly bypass all approval checks — a prompt-injection escalation path.
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
+
+# Freeze SUDO_PASSWORD presence at module import time — same prompt-injection
+# class as YOLO. A skill setting os.environ["SUDO_PASSWORD"] = "x" mid-session
+# would bypass the sudo stdin guard on the next call.
+_SUDO_PASSWORD_CONFIGURED: bool = "SUDO_PASSWORD" in os.environ
+
+# Maximum unwrap passes for iterative $()/backtick expansion. Prevents infinite
+# loops on crafted deeply-nested substitution chains.
+_MAX_UNWRAP_PASSES = 5
+
+# Pre-compiled heredoc body regex. Strips the body content between heredoc
+# delimiters while preserving the << opener so that script execution patterns
+# (python3 << 'EOF') still match. The body (and the closing delimiter) is
+# replaced with the captured opener (\1) so that dangerous keywords inside the
+# heredoc body don't trigger false positives.
+#
+# The trailing newline after the closing delimiter is matched with a LOOKAHEAD
+# (?=\n|$) — NOT consumed — so that a command on the line *after* the heredoc
+# (e.g. ``cat <<EOF\n...\nEOF\nshutdown now``) keeps its command-position
+# newline separator. Consuming it would glue ``EOF`` onto ``shutdown``
+# (``eofshutdown``), destroying the \b / _CMDPOS anchor and letting the real
+# post-heredoc command slip past hardline detection.
+_HEREDOC_BODY_RE = re.compile(
+    r"(<<-?\s*(['\"]?)(\w+)\2[ \t]*)\n.*?\n\3[ \t]*(?=\n|$)",
+    re.DOTALL,
+)
+
+# =========================================================================
+# Shell wrapper taxonomy — single source of truth for all detection paths
+# =========================================================================
+# Every check (hardline, dangerous, suspicious, sudo-stdin) must consume
+# the same wrapper list.  _CMDPOS and _SUDO_STDIN_RE are built from these
+# sets so the regex fallback path never falls behind the shlex primary path.
+
+_SHELL_SEPARATORS = frozenset({";", "&", "&&", "||", "|", "|&"})
+
+# Wrappers where the command word is the first non-flag, non-assignment token.
+# sudo echo hello  →  command word = echo, stop.
+_SIMPLE_WRAPPERS = frozenset({
+    "sudo", "env", "exec", "nohup", "setsid", "time",
+    "command", "builtin",
+    "doas", "pkexec", "run0",
+    "unshare", "capsh", "setpriv",
+    "arch",
+    "stdbuf", "strace", "ltrace", "valgrind", "firejail",
+    "xargs",
+})
+
+# Wrappers that take positional arguments before the command word.
+# timeout 5 CMD, nice -n 10 CMD, flock /lock CMD, nsenter -t PID CMD.
+# We cannot statically know the arity, so we collect *all* non-flag tokens
+# after the wrapper — wrapper positionals AND the command word.  This is
+# conservative (may flag benign arg-position indirection on the real
+# command), but the security benefit of catching ``timeout 5 "${VAR:-rm}"``
+# outweighs the false-positive cost on unusual combinations like
+# ``timeout 5 echo "${VAR:-default}"``.
+_POSITIONAL_WRAPPERS = frozenset({
+    "nice", "ionice", "chrt", "taskset", "numactl",
+    "timeout", "flock",
+    "bwrap", "nsenter",
+    "perf",
+    "chroot", "jexec",
+})
+
+_WRAPPERS = _SIMPLE_WRAPPERS | _POSITIONAL_WRAPPERS
+
+# Flags (sudo family) that consume the following token as a value rather than
+# the command word.  Used by _command_position_words to skip the value of
+# ``sudo -u root`` / ``doas -u root`` so the real command word is extracted.
+# ``--user=root`` (with embedded ``=``) is self-contained and needs no entry.
+_WRAPPER_VALUE_FLAGS = frozenset({
+    "-u", "--user", "-g", "--group", "-C", "--close-from",
+    "-D", "--chdir", "-R", "--chroot", "-P", "--prompt",
+    "-r", "--role", "-t", "--type", "-U", "--other-user",
+})
+
+# Build the _CMDPOS wrapper fragment from _SIMPLE_WRAPPERS and
+# _POSITIONAL_WRAPPERS so the regex fallback path never falls behind
+# the shlex primary path.  sudo and env get special treatment (sudo
+# takes flags, env takes VAR=VAL pairs).  Hardline keywords are
+# embedded in the fragment so a sudo flag-value is never swallowed
+# as a value (negative lookahead).  The outer ``(?:...)*`` makes the
+# fragment repeatable — wrapper chaining (``exec sudo -u root shutdown``)
+# is handled by the same alternation as single wrappers.
+#
+# ReDoS-safe by construction: every alternation branch begins with a
+# literal wrapper keyword before any ``\s+`` quantifier, so branches
+# share no common prefix and the engine cannot try the same input span
+# against multiple branches.
+_HARDLINE_KW = r'shutdown|reboot|halt|poweroff|init|systemctl|telinit'
+_CMDPOS_WRAPPER_FRAGMENT = (
+    r'(?:'
+        # sudo: flags, optionally flag+non-keyword-value
+        r'sudo\s+(?:'
+            r'-[^\s]+\s+(?!(?:' + _HARDLINE_KW + r')\b)\S+\s+'
+            r'|-[^\s]+\s+'
+        r')*'
+        # env VAR=VAL pairs
+        r'|env\s+(?:\w+=\S*\s+)*'
+        # simple wrappers + their flags
+        r'|(?:' + '|'.join(
+            w for w in sorted(_SIMPLE_WRAPPERS)
+            if w not in ("sudo", "env")
+        ) + r')\s+(?:-[^\s]+\s+)*'
+        # positional wrappers + bounded positional run
+        r'|(?:' + '|'.join(sorted(_POSITIONAL_WRAPPERS)) + r')\s+(?:\S+\s+){0,8}'
+    r')*'
+)
 
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
@@ -253,9 +364,7 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 _CMDPOS = (
     r'(?:^|[;&|\n`]|\$\()'         # start position
     r'\s*'                          # optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    + _CMDPOS_WRAPPER_FRAGMENT +
     r'\s*'
 )
 
@@ -307,11 +416,11 @@ HARDLINE_PATTERNS_COMPILED = [
 # reason for the agent to pipe passwords to sudo -S when no password
 # has been configured.
 _SUDO_STDIN_RE = re.compile(
-    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
+    _CMDPOS + r'sudo\s+-S\b',
     re.IGNORECASE)
 
 
-def _check_sudo_stdin_guard(command: str) -> tuple:
+def _check_sudo_stdin_guard(command: str) -> tuple[bool, str | None]:
     """Detect ``sudo -S`` (stdin password) without configured SUDO_PASSWORD.
 
     When SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S``
@@ -322,24 +431,108 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     Returns:
         (is_blocked: bool, description: str | None)
     """
-    if "SUDO_PASSWORD" in os.environ:
+    if _SUDO_PASSWORD_CONFIGURED:
         return (False, None)
-    normalized = _normalize_command_for_detection(command).lower()
-    if _SUDO_STDIN_RE.search(normalized):
-        return (True, "sudo password guessing via stdin (sudo -S)")
+    candidates, _ = _detection_candidates(command)
+    for candidate in candidates:
+        if _SUDO_STDIN_RE.search(candidate):
+            return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
 
 
-def detect_hardline_command(command: str) -> tuple:
+# Hardline keywords that are single command-position words.
+_HARDEX_KW_SINGLE = frozenset({"shutdown", "reboot", "halt", "poweroff"})
+
+
+def _shlex_hardline_match(command: str) -> str | None:
+    """Wrapper-aware hardline keyword check via shlex command-position extraction.
+
+    Catches wrapper-prefix forms the _CMDPOS regex fragment cannot model
+    uniformly: positional wrappers (``timeout 5 shutdown``, ``chroot /mnt
+    shutdown``), simple-wrapper flags (``stdbuf -oL shutdown``, ``strace -f
+    reboot``), sudo flag-values (``sudo -u root shutdown``), and arbitrary
+    wrapper chaining (``exec sudo -u root shutdown``).  Returns a hardline
+    description when a command-position word is a hardline keyword, else None.
+    Returns None (no match) on unbalanced quotes — the caller falls back to
+    the _CMDPOS regex path.  Over-matches positional-wrapper arguments the
+    same way _command_position_words already does (see the comment on
+    _POSITIONAL_WRAPPERS); this is the accepted cost of catching
+    ``timeout 5 shutdown``.
+    """
+    try:
+        tokens = shlex.split(_space_shell_operators(_normalize_command_boundaries(command)))
+    except ValueError:
+        return None
+    expect_cmd = True
+    after_simple = False
+    after_positional = False
+    skip_value = False
+    for idx, tok in enumerate(tokens):
+        if tok in _SHELL_SEPARATORS:
+            expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
+            continue
+        if tok.endswith(";") and tok[:-1] not in _SHELL_SEPARATORS:
+            expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
+            continue
+        if expect_cmd:
+            if skip_value:
+                skip_value = False
+                continue
+            if tok in _SIMPLE_WRAPPERS:
+                after_simple = True
+                continue
+            if tok in _POSITIONAL_WRAPPERS:
+                after_positional = True
+                continue
+            if tok.startswith("-"):
+                if tok in _WRAPPER_VALUE_FLAGS:
+                    skip_value = True
+                continue
+            if re.match(r"^\w+=", tok):
+                continue
+            wl = tok.lower()
+            nxt = tokens[idx + 1].lower() if idx + 1 < len(tokens) else None
+            if wl in _HARDEX_KW_SINGLE:
+                return "system shutdown/reboot"
+            if wl == "init" and nxt in ("0", "6"):
+                return "init 0/6 (shutdown/reboot)"
+            if wl == "telinit" and nxt in ("0", "6"):
+                return "telinit 0/6 (shutdown/reboot)"
+            if wl == "systemctl" and nxt in ("poweroff", "reboot", "halt", "kexec"):
+                return "systemctl poweroff/reboot"
+            if after_positional:
+                continue
+            if after_simple:
+                expect_cmd = False
+                continue
+            expect_cmd = False
+    return None
+
+
+def detect_hardline_command(command: str) -> tuple[bool, str | None]:
     """Check if a command matches the unconditional hardline blocklist.
 
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
-            return (True, description)
+    # Shlex command-position path: catches wrapper-prefix keywords
+    # (timeout/nice/sudo -u/stdbuf/chroot/...) that the _CMDPOS regex
+    # fragment cannot model uniformly.  Runs before the regex so wrapper
+    # chaining and positional wrappers are handled by one consistent path.
+    desc = _shlex_hardline_match(command)
+    if desc is not None:
+        return (True, desc)
+    candidates, _ = _detection_candidates(command)
+    for candidate in candidates:
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                return (True, description)
     return (False, None)
 
 
@@ -559,18 +752,22 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
-    Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
-    null bytes, and normalizes Unicode fullwidth characters so that
+    Strips ANSI escape sequences (full ECMA-48), null bytes, zero-width
+    characters, and normalizes Unicode fullwidth characters so that
     obfuscation techniques cannot bypass the pattern-based detection.
     """
-    from tools.ansi_strip import strip_ansi
-
     # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
     command = strip_ansi(command)
     # Strip null bytes
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip zero-width and format characters (Unicode category Cf).
+    # r\u200bm breaks \brm\b word boundaries; r\u200b\u200cm is invisible.
+    command = ''.join(c for c in command if unicodedata.category(c) != 'Cf')
+    # Decode ANSI-C quoted strings ($'r\155' -> rm) before backslash stripping
+    # so the octal/hex escapes inside $'...' are resolved, not destroyed.
+    command = _decode_ansi_c_quoting(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
@@ -654,17 +851,516 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return command
 
 
-def detect_dangerous_command(command: str) -> tuple:
+def _unwrap_command_substitution(command: str) -> tuple[str, bool]:
+    """Iteratively unwrap $() and backtick command substitutions.
+
+    Uses bracket-counting to handle nested parens and parens inside
+    quoted strings. Runs up to _MAX_UNWRAP_PASSES iterations to prevent
+    infinite loops on crafted deeply-nested chains.
+
+    Returns (unwrapped_command, had_unresolvable).
+    """
+    def _unwrap_one_pass(s: str) -> str:
+        """Unwrap one level of $() and backtick substitutions."""
+        result: list[str] = []
+        i = 0
+        while i < len(s):
+            if s[i:i+2] == '$(' and (i == 0 or s[i-1] != '\\'):
+                depth = 1
+                j = i + 2
+                while j < len(s) and depth > 0:
+                    if s[j] == '(' and (j == 0 or s[j-1] != '\\'):
+                        depth += 1
+                    elif s[j] == ')' and (j == 0 or s[j-1] != '\\'):
+                        depth -= 1
+                    j += 1
+                if depth == 0:
+                    inner = s[i+2:j-1]
+                    result.append(' ')
+                    result.append(inner)
+                    result.append(' ')
+                    i = j
+                    continue
+            if s[i] == '`' and (i == 0 or s[i-1] != '\\'):
+                j = i + 1
+                while j < len(s) and (s[j] != '`' or s[j-1] == '\\'):
+                    j += 1
+                if j < len(s):
+                    inner = s[i+1:j]
+                    result.append(' ')
+                    result.append(inner)
+                    result.append(' ')
+                    i = j + 1
+                    continue
+            result.append(s[i])
+            i += 1
+        return ''.join(result)
+
+    result = command
+    had_unresolvable = False
+    for _ in range(_MAX_UNWRAP_PASSES):
+        prev = result
+        result = _unwrap_one_pass(result)
+        if result == prev:
+            break
+    else:
+        had_unresolvable = True
+    return result, had_unresolvable
+
+
+def _decode_ansi_c_quoting(command: str) -> str:
+    """Decode ANSI-C quoted strings ($'...') to their literal values.
+
+    $'r\\155' decodes to 'rm' (octal 155 = 'm'), $'r\\x6d' decodes to 'rm'
+    (hex 6d = 'm'). These bypass literal regex matching on the raw string.
+    """
+    def _replace(match: re.Match) -> str:
+        inner = match.group(1)
+        try:
+            decoded = codecs.decode(inner, 'unicode_escape')
+            return ' ' + decoded + ' '
+        except Exception:
+            return match.group(0)
+
+    return re.sub(r"\$'([^']*)'", _replace, command)
+
+
+def _expand_braces(command: str) -> list[str]:
+    """Expand bash brace expansions to all possible resulting strings.
+
+    {r,R}{m,M} produces rm, rM, Rm, RM. {rm,cp} produces rm, cp.
+    Returns a list of all expanded forms (or [command] if no braces found).
+    """
+    brace_re = re.compile(r'\{([^{}]*?,[^{}]*)\}')
+    matches = list(brace_re.finditer(command))
+    if not matches:
+        return [command]
+
+    segments: list[tuple[str, list[str] | str]] = []
+    last_end = 0
+    for m in matches:
+        if m.start() > last_end:
+            segments.append(('literal', command[last_end:m.start()]))
+        alternatives = [a.strip() for a in m.group(1).split(',')]
+        segments.append(('brace', alternatives))
+        last_end = m.end()
+    if last_end < len(command):
+        segments.append(('literal', command[last_end:]))
+
+    results: list[str] = ['']
+    for seg_type, seg_value in segments:
+        if seg_type == 'literal':
+            results = [r + seg_value for r in results]
+        else:
+            new_results: list[str] = []
+            for r in results:
+                for alt in seg_value:
+                    new_results.append(r + alt)
+            results = new_results
+
+    return results
+
+
+def _resolve_inline_vars(command: str) -> str:
+    """Resolve inline variable assignments within the same command string.
+
+    X=r; ${X}m -rf / resolves to rm -rf / by tracking VAR=val assignments
+    separated by ; or newline and substituting ${VAR} / $VAR references.
+    Only variables assigned in this command string are resolved; pre-existing
+    environment variables are not touched.
+    """
+    statements = re.split(r'[;\n]', command)
+    var_map: dict[str, str] = {}
+    resolved_parts: list[str] = []
+
+    for stmt in statements:
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        assign_match = re.match(r'^(\w+)=(\S+)$', stmt)
+        if assign_match:
+            var_map[assign_match.group(1)] = assign_match.group(2)
+            continue
+        for var_name, var_val in var_map.items():
+            stmt = re.sub(
+                r'\$\{' + re.escape(var_name) + r'\}',
+                var_val, stmt,
+            )
+            stmt = re.sub(
+                r'\$' + re.escape(var_name) + r'(?![a-zA-Z0-9_])',
+                var_val, stmt,
+            )
+        resolved_parts.append(stmt)
+
+    return '; '.join(resolved_parts) if resolved_parts else command
+
+
+def _space_shell_operators(command: str) -> str:
+    """Insert spaces around shell control operators outside quotes.
+
+    shlex.split() only splits on whitespace, so ``echo hi|rm`` becomes
+    ``['echo', 'hi|rm']`` — the ``|`` is glued to ``hi`` and the real
+    command word ``rm`` is never extracted.  This function inserts spaces
+    around ``|``, ``&&``, ``||``, ``>``, ``<``, ``;&`` outside quotes so
+    shlex can split them correctly.  Operators inside quotes are left
+    alone — ``echo '; $(pwd)'`` must not split on the quoted ``;``.
+    """
+    result: list[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(command):
+        c = command[i]
+        if c == "'" and not in_double:
+            in_single = not in_single
+            result.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            result.append(c)
+            i += 1
+            continue
+        if not in_single and not in_double:
+            if command[i:i+2] in ("&&", "||", "|&", ";&"):
+                result.append(f" {command[i:i+2]} ")
+                i += 2
+                continue
+            # << and >> are redirection, not separators — leave intact
+            if command[i:i+2] in ("<<", ">>"):
+                result.append(command[i:i+2])
+                i += 2
+                continue
+            if c in ("|", ";", "&", ">", "<"):
+                result.append(f" {c} ")
+                i += 1
+                continue
+        result.append(c)
+        i += 1
+    return "".join(result)
+
+
+def _normalize_command_boundaries(command: str) -> str:
+    """Strip heredoc bodies, then convert unquoted newlines to ``;``.
+
+    Heredoc stripping must happen FIRST so body content (stdin data) is
+    removed before newline-to-separator conversion.  Applied to all three
+    shlex consumers so they share identical boundary normalization —
+    the asymmetry between ``_shlex_hardline_match`` (no heredoc strip)
+    and ``_detection_candidates`` (heredoc strip) was the Round 7 root
+    cause.
+    """
+    base = _HEREDOC_BODY_RE.sub(r"\1", command)
+    result: list[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(base):
+        c = base[i]
+        if c == "'" and not in_double:
+            in_single = not in_single
+            result.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            result.append(c)
+            i += 1
+            continue
+        if not in_single and not in_double and c == "\n":
+            result.append(" ; ")
+            i += 1
+            continue
+        result.append(c)
+        i += 1
+    return "".join(result)
+
+
+def _detection_candidates(command: str) -> tuple[list[str], bool]:
+    """Return normalised forms of a command to match the denylist against.
+
+    The regex denylist matches a raw string, but bash performs backslash and
+    quote removal, command substitution, brace expansion, and variable
+    expansion *before* executing. Shell-level encodings of a blocked keyword
+    (``r\\m``, ``r''m``, ``$(echo rm)``, ``${0/x/r}m``, ``{r,R}{m,M}``,
+    ``$'r\\155'``) slip past a literal regex.
+
+    We generate multiple normalised forms that neutralise these encodings.
+    This only ever *adds* detections — it never suppresses an existing match —
+    so it cannot create a new bypass.
+
+    Returns (candidates, has_unresolvable) where has_unresolvable is True
+    when the command contains indirection that could not be statically
+    resolved (deeply nested substitutions, parameter expansion operators).
+    """
+    base = _normalize_command_for_detection(command).lower()
+    # Strip heredoc bodies and convert unquoted newlines to ``;`` so
+    # the regex path and shlex path share identical boundary normalization.
+    base = _normalize_command_boundaries(base)
+    # Pre-space shell operators so shlex.split() can separate glued
+    # operators (echo hi|rm → echo hi | rm).  Applied here so the
+    # hardline/dangerous regex paths and the shlex dequote steps all
+    # use the same operator splitting as the suspicious-indirection path.
+    base = _space_shell_operators(base)
+    candidates: list[str] = [base]
+    has_unresolvable = False
+
+    # Step 1: shlex dequote — resolves backslash escapes so that
+    # \$(echo rm) becomes $(echo rm) before the unwrap step sees it.
+    shlex_candidates: list[str] = []
+    for cand in list(candidates):
+        try:
+            tokens = shlex.split(cand)
+        except ValueError:
+            continue
+        if tokens:
+            joined = ' '.join(tokens)
+            if joined not in candidates and joined not in shlex_candidates:
+                shlex_candidates.append(joined)
+    candidates.extend(shlex_candidates)
+
+    # Step 2: Iterative $()/backtick unwrap with bracket-counting.
+    # Runs on all candidates (backslashes already resolved by step 1).
+    unwrap_candidates: list[str] = []
+    for cand in list(candidates):
+        unwrapped, sub_unresolvable = _unwrap_command_substitution(cand)
+        if sub_unresolvable:
+            has_unresolvable = True
+        if unwrapped != cand and unwrapped not in candidates and unwrapped not in unwrap_candidates:
+            unwrap_candidates.append(unwrapped)
+    candidates.extend(unwrap_candidates)
+
+    # Step 4: shlex dequote again — unwrap may have exposed new quoted content
+    # (e.g. $(echo "'rm'") -> 'rm' after unwrap, then shlex resolves quotes).
+    shlex2_candidates: list[str] = []
+    for cand in list(candidates):
+        try:
+            tokens = shlex.split(cand)
+        except ValueError:
+            continue
+        if tokens:
+            joined = ' '.join(tokens)
+            if joined not in candidates and joined not in shlex2_candidates:
+                shlex2_candidates.append(joined)
+    candidates.extend(shlex2_candidates)
+
+    # Step 5: Brace expansion on each candidate.
+    brace_candidates: list[str] = []
+    for cand in list(candidates):
+        for expanded in _expand_braces(cand):
+            if expanded not in candidates and expanded not in brace_candidates:
+                brace_candidates.append(expanded)
+    candidates.extend(brace_candidates)
+
+    # Step 6: Inline variable assignment resolution.
+    inline_resolved = _resolve_inline_vars(base)
+    if inline_resolved != base and inline_resolved not in candidates:
+        candidates.append(inline_resolved)
+        try:
+            tokens = shlex.split(inline_resolved)
+        except ValueError:
+            tokens = None
+        if tokens:
+            joined = ' '.join(tokens)
+            if joined not in candidates:
+                candidates.append(joined)
+
+    # Step 7: Flag remaining unresolvable indirection.
+    # Parameter expansion operators that survived all normalisation.
+    for cand in candidates:
+        if re.search(r'\$\{[^}]*(?::[-=?+%#]|/)[^}]*\}', cand):
+            has_unresolvable = True
+            break
+
+    return candidates, has_unresolvable
+
+
+
+
+
+
+def _has_homoglyph(word: str) -> bool:
+    """Return True if the word contains characters outside the safe ASCII set.
+
+    Command-position words have no legitimate reason to contain non-ASCII
+    characters.  An allow-list of [A-Za-z0-9._/+-] stops the homoglyph
+    sub-game permanently — no need to enumerate every confusable Unicode
+    block (Cyrillic, Greek, fullwidth Latin, Cherokee, Coptic, Math
+    Alphanumerics, Armenian, ...).
+    """
+    for c in word:
+        if not (c.isascii() and (c.isalnum() or c in "._/+-")):
+            return True
+    return False
+
+
+def _command_position_words(command: str) -> list[str] | None:
+    """Return command-position words from each pipeline/list segment.
+
+    Uses shlex to tokenise with quote-context awareness — separators and
+    expansions inside double quotes stay inert, which a regex cannot
+    distinguish.  Shell operators (``|``, ``&&``, ``||``, ``>``, ``<``)
+    are pre-spaced outside quotes so shlex splits them correctly.
+
+    Leading wrapper commands (sudo, env, exec, ...) and their flags /
+    VAR=VAL prefixes are skipped.  After a recognised wrapper, *every*
+    subsequent non-flag non-assignment token is collected — wrapper
+    positional arguments (``timeout 5``, ``flock /lock``, ``nice -n 10``)
+    are checked alongside the real command word so indirection in any of
+    them is caught.
+
+    Returns None if the command cannot be tokenised (unbalanced quotes);
+    the caller then falls back to the regex path.
+    """
+    try:
+        tokens = shlex.split(_space_shell_operators(_normalize_command_boundaries(command)))
+    except ValueError:
+        return None
+
+    words: list[str] = []
+    expect_cmd = True
+    after_simple = False
+    after_positional = False
+    skip_value = False  # set after a _WRAPPER_VALUE_FLAGS flag; next tok is its value
+    for tok in tokens:
+        if tok in _SHELL_SEPARATORS:
+            expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
+            continue
+        if tok.endswith(";") and tok[:-1] not in _SHELL_SEPARATORS:
+            expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
+            continue
+        if expect_cmd:
+            if skip_value:
+                # This token is the value of the preceding flag (e.g. ``root``
+                # in ``sudo -u root``), not the command word — discard it.
+                skip_value = False
+                continue
+            if tok in _SIMPLE_WRAPPERS:
+                after_simple = True
+                continue
+            if tok in _POSITIONAL_WRAPPERS:
+                after_positional = True
+                continue
+            if tok.startswith("-"):
+                # A value-bearing flag consumes its next token as a value.
+                if tok in _WRAPPER_VALUE_FLAGS:
+                    skip_value = True
+                continue
+            if re.match(r"^\w+=", tok):
+                continue
+            words.append(tok)
+            if after_positional:
+                # Keep collecting — we don't know how many positionals
+                # this wrapper takes.  The real command word is somewhere
+                # in the collected set.
+                continue
+            if after_simple:
+                # This is the command word after a simple wrapper — stop.
+                expect_cmd = False
+                continue
+            # No wrapper — this is the command word, stop.
+            expect_cmd = False
+    return words
+
+
+def _has_suspicious_indirection(command: str) -> bool:
+    """Check for shell indirection patterns that cannot be statically resolved.
+
+    These patterns indicate the command is using shell features to hide its
+    true intent — parameter expansion operators, history expansion, command
+    substitution, or non-Latin homoglyph characters. Commands with these
+    patterns are blocked unconditionally (before yolo/mode=off) because
+    there is no legitimate reason for an agent to construct command names
+    via indirection.
+
+    Primary path: shlex-based command-word extraction with quote-context
+    awareness.  Double quotes do NOT suppress parameter expansion or command
+    substitution in bash, so shlex keeps them intact for the checks.  Only
+    single-quoted content (which DOES suppress expansion) is inert.
+
+    Fallback path (unbalanced quotes): strip single quotes + heredoc bodies,
+    then run _CMDPOS-anchored regex checks with an optional leading double
+    quote so ``"${VAR:-rm}`` isn't hidden from the anchor.
+    """
+    base = _HEREDOC_BODY_RE.sub(r"\1", command)
+
+    words = _command_position_words(base)
+    if words is not None:
+        for w in words:
+            # Check 1: Parameter expansion operators inside the command word.
+            if re.search(r"\$\{[^}]*(?::[-=?+%#]|/)[^}]*\}", w):
+                return True
+            # Check 2: Command substitution (shlex keeps $(...) and `...`
+            # intact, so raw substring match is correct here).
+            if "$(" in w or "`" in w:
+                return True
+            # Check 3: History expansion as the command word: !rm, !!.
+            if w.startswith("!") and len(w) > 1:
+                return True
+            # Check 4: Non-Latin homoglyph in the command word.
+            if _has_homoglyph(w):
+                return True
+            # Check 5: Any $ in a command-position word is unresolvable
+            # indirection — plain $VAR, ${VAR}, $0, $? — even without
+            # an expansion operator.  ``echo hi|"$rm" -rf /`` with
+            # rm=rm at runtime hides the command name from the denylist.
+            if "$" in w:
+                return True
+        return False
+
+    # Fallback: unbalanced quotes — shlex can't parse.  Strip only single
+    # quotes (which DO suppress expansion) + heredoc bodies.  Double quotes
+    # are intentionally left in place so quoted indirection is not hidden.
+    stripped = re.sub(r"'[^']*'", "", base)
+    if re.search(_CMDPOS + r'"?' + r"\$\{[^}]*(?::[-=?+%#]|/)[^}]*\}",
+                  stripped):
+        return True
+    if re.search(_CMDPOS + r'"?(\$\(|`)', stripped):
+        return True
+    if re.search(_CMDPOS + r'"?!(?:\w|!)', stripped):
+        return True
+    if re.search(_CMDPOS + r'"?\$', stripped):
+        return True
+    for m in re.finditer(_CMDPOS + r'"?(\w+)', stripped):
+        if _has_homoglyph(m.group(1)):
+            return True
+    return False
+
+
+def _suspicious_indirection_block_result() -> dict:
+    """Build the standard block result for suspicious shell indirection."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            "BLOCKED (suspicious indirection): This command uses shell "
+            "features (parameter expansion, history expansion, or non-Latin "
+            "characters) that can hide the true command being executed. "
+            "There is no legitimate reason for an agent to construct command "
+            "names via indirection. If you genuinely need to run this "
+            "command, run it yourself in a terminal outside the agent."
+        ),
+    }
+
+
+def detect_dangerous_command(command: str) -> tuple[bool, str | None, str | None]:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
-            pattern_key = description
-            return (True, pattern_key, description)
+    candidates, _ = _detection_candidates(command)
+    for candidate in candidates:
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                pattern_key = description
+                return (True, pattern_key, description)
     return (False, None, None)
 
 
@@ -1239,6 +1935,15 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    # Suspicious indirection floor: commands using shell features to hide
+    # their true intent (parameter expansion operators, history expansion,
+    # non-Latin homoglyph characters) are blocked unconditionally. There is
+    # no legitimate reason for an agent to construct command names via
+    # indirection — this fires BEFORE yolo/mode=off.
+    if _has_suspicious_indirection(command):
+        logger.warning("Suspicious indirection block: %s", command[:200])
+        return _suspicious_indirection_block_result()
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -1500,6 +2205,15 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
+    # == Suspicious indirection guard ==
+    # Commands using shell features to hide their true intent (parameter
+    # expansion operators, history expansion, non-Latin homoglyph characters)
+    # are blocked unconditionally. There is no legitimate reason for an agent
+    # to construct command names via indirection — fires BEFORE yolo/mode=off.
+    if _has_suspicious_indirection(command):
+        logger.warning("Suspicious indirection block: %s", command[:200])
+        return _suspicious_indirection_block_result()
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
@@ -1519,6 +2233,10 @@ def check_all_command_guards(command: str, env_type: str,
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
+                # Suspicious indirection is blocked unconditionally in cron too
+                if _has_suspicious_indirection(command):
+                    logger.warning("Suspicious indirection block (cron): %s", command[:200])
+                    return _suspicious_indirection_block_result()
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:
