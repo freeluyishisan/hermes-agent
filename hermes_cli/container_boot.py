@@ -369,6 +369,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     between the two registration paths and protects against a
     half-populated dir if the script is interrupted mid-write.
     """
+    import os
     import shutil
 
     from hermes_cli.service_manager import (
@@ -379,11 +380,18 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 
     validate_profile_name(profile)
     service_dir = scandir / f"gateway-{profile}"
-    tmp_dir = service_dir.with_name(service_dir.name + ".tmp")
+    # Hidden temp dirs are ignored by s6-svscan. Keep the boot-time path
+    # consistent with S6ServiceManager.register_profile_gateway so an
+    # eager scanner can never supervise the half-built temp slot.
+    tmp_dir = service_dir.with_name(f".{service_dir.name}.tmp-{os.getpid()}")
 
-    # Wipe any leftover tmp from a previous interrupted run.
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    # Wipe any leftover temp dirs from a previous interrupted run, including
+    # the legacy non-hidden name used by older images.
+    legacy_tmp_dir = service_dir.with_name(service_dir.name + ".tmp")
+    if legacy_tmp_dir.exists():
+        shutil.rmtree(legacy_tmp_dir, ignore_errors=True)
+    for stale in scandir.glob(f".{service_dir.name}.tmp-*"):
+        shutil.rmtree(stale, ignore_errors=True)
     tmp_dir.mkdir(parents=True)
 
     try:
