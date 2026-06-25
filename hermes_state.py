@@ -2595,6 +2595,30 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def update_message_content(self, message_row_id: int, content: Any) -> None:
+        """Update a single message row's stored content in place.
+
+        The incremental flush path (``run_agent._flush_messages_to_session_db``)
+        is append-only: each message dict is INSERTed once via
+        :meth:`append_message` and tracked by Python object id so it is never
+        written twice. That assumes a flushed message is never mutated
+        afterwards — but a mid-turn ``/steer`` appends an out-of-band marker to
+        an already-flushed ``role:"tool"`` result, so the live transcript and
+        the model both see the steered content while ``state.db`` keeps the
+        stale pre-steer row. This primitive lets the flush path
+        UPDATE the existing row instead of leaving stale content or inserting a
+        duplicate. The ``AFTER UPDATE`` triggers keep both FTS indexes in sync.
+        """
+        stored_content = self._encode_content(content)
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ?",
+                (stored_content, message_row_id),
+            )
+
+        self._execute_write(_do)
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 

@@ -1610,11 +1610,22 @@ class AIAgent:
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
             if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
                 self._flushed_db_message_ids = set()
+                self._flushed_db_message_rows = {}
                 self._flushed_db_message_session_id = current_session_id
             flushed_ids = getattr(self, "_flushed_db_message_ids", None)
             if not isinstance(flushed_ids, set):
                 flushed_ids = set()
                 self._flushed_db_message_ids = flushed_ids
+            # Maps id(msg) -> (sqlite_row_id, last_flushed_content) for the
+            # messages this path INSERTed. Lets a later flush detect that an
+            # already-flushed dict was mutated in place (a mid-turn /steer
+            # marker appended to a flushed tool result) and UPDATE
+            # the durable row instead of skipping it by object id and leaving
+            # stale pre-steer content in state.db.
+            flushed_rows = getattr(self, "_flushed_db_message_rows", None)
+            if not isinstance(flushed_rows, dict):
+                flushed_rows = {}
+                self._flushed_db_message_rows = flushed_rows
             history_ids = {
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
@@ -1624,8 +1635,6 @@ class AIAgent:
                 if not isinstance(msg, dict):
                     continue
                 msg_id = id(msg)
-                if msg_id in flushed_ids:
-                    continue
                 if msg_id in history_ids:
                     flushed_ids.add(msg_id)
                     continue
@@ -1645,6 +1654,18 @@ class AIAgent:
                         elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                             _txt.append("[screenshot]")
                     content = "\n".join(_txt) if _txt else None
+                if msg_id in flushed_ids:
+                    # Already INSERTed this turn. The only legitimate post-flush
+                    # change is an in-place content mutation — e.g. a mid-turn
+                    # /steer marker appended to an already-flushed tool result.
+                    # Persist that drift by UPDATEing the existing
+                    # row so state.db matches the content the model actually saw,
+                    # instead of skipping by object id and leaving stale content.
+                    prev = flushed_rows.get(msg_id)
+                    if prev is not None and prev[1] != content:
+                        self._session_db.update_message_content(prev[0], content)
+                        flushed_rows[msg_id] = (prev[0], content)
+                    continue
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [
@@ -1653,7 +1674,7 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
+                row_id = self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
                     content=content,
@@ -1669,6 +1690,7 @@ class AIAgent:
                     timestamp=msg.get("timestamp"),
                 )
                 flushed_ids.add(msg_id)
+                flushed_rows[msg_id] = (row_id, content)
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
