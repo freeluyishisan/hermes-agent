@@ -126,6 +126,7 @@ AUTHOR_MAP = {
     "manusjs@users.noreply.github.com": "manus-use",  # PR #51129 salvage (Discord thread-starter dedup, #51057)
     "chilltulpa@gmail.com": "TheGardenGallery",
     "al@randomsnowflake.me": "randomsnowflake",
+    "sharma.priyanshu96@gmail.com": "ipriyaaanshu",  # PR #49214 (process monitor kills children on harmless stderr output; #48968)
     "zakame@zakame.net": "zakame",
     "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",
     "qinhaojie.exe@bytedance.com": "qin-ctx",
