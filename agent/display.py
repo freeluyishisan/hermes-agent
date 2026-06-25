@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
@@ -159,6 +159,23 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
         pass
     # 3. Hardcoded fallback
     return default
+
+
+# =========================================================================
+# Delegation model label (shown alongside delegate_task progress)
+# =========================================================================
+
+
+def _get_delegation_model_label(provider: Optional[str] = None, model: Optional[str] = None) -> str:
+    """Return a short model tag for display from actual runtime values.
+
+    Returns ``[xai-oauth/grok-build-0.1] `` (with trailing space) when
+    provider and model are provided, or empty string when not available.
+    """
+    if provider or model:
+        parts = [p for p in [provider, model] if p]
+        return f"[{'/'.join(parts)}] "
+    return ""
 
 
 # =========================================================================
@@ -1235,12 +1252,34 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
+        # Pull actual runtime provider/model from the delegate result dict
+        # (populated by _run_single_child from child.provider / child.model).
+        provider = None
+        model = None
+        if result:
+            try:
+                if isinstance(result, str):
+                    res = safe_json_loads(result) or {}
+                else:
+                    res = result if isinstance(result, dict) else {}
+                results_list = res.get("results") or []
+                if results_list and isinstance(results_list, list):
+                    first = results_list[0] if results_list else {}
+                    if isinstance(first, dict):
+                        provider = first.get("provider")
+                        model = first.get("model")
+                elif isinstance(res, dict):
+                    provider = res.get("provider")
+                    model = res.get("model")
+            except Exception:
+                pass
+        tag = _get_delegation_model_label(provider=provider, model=model)
         if tasks and isinstance(tasks, list):
             task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
             detail = " | ".join(goals) if goals else "parallel"
             count_label = task_count or len(tasks)
-            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
-        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+            return _wrap(f"┊ 🔀 delegate  {tag}{count_label}x: {_trunc(detail, 35)}  {dur}")
+        return _wrap(f"┊ 🔀 delegate  {tag}{_trunc(args.get('goal', ''), 35 - len(tag))}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")

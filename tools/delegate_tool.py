@@ -796,6 +796,7 @@ def _build_child_progress_callback(
     parent_id: Optional[str] = None,
     depth: Optional[int] = None,
     model: Optional[str] = None,
+    provider: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     session_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
@@ -806,7 +807,7 @@ def _build_child_progress_callback(
       Gateway: batches tool names and relays to parent's progress callback
 
     The identity kwargs (``subagent_id``, ``parent_id``, ``depth``, ``model``,
-    ``toolsets``) are threaded into every relayed event so the TUI can
+    ``provider``, ``toolsets``) are threaded into every relayed event so the TUI can
     reconstruct the live spawn tree and route per-branch controls (kill,
     pause) back by ``subagent_id``.  All are optional for backward compat —
     older callers that ignore them still produce a flat list on the TUI.
@@ -843,6 +844,8 @@ def _build_child_progress_callback(
             kw["depth"] = depth
         if model is not None:
             kw["model"] = model
+        if provider is not None:
+            kw["provider"] = provider
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
         # The child's own session id — filled into the shared ref once the
@@ -1104,6 +1107,7 @@ def _build_child_agent(
 
     # Resolve the child's effective model early so it can ride on every event.
     effective_model_for_cb = model or getattr(parent_agent, "model", None)
+    effective_provider_for_cb = override_provider or getattr(parent_agent, "provider", None)
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
@@ -1118,6 +1122,7 @@ def _build_child_agent(
         parent_id=parent_subagent_id,
         depth=tui_depth,
         model=effective_model_for_cb,
+        provider=effective_provider_for_cb,
         toolsets=child_toolsets,
         session_ref=child_session_ref,
     )
@@ -1846,6 +1851,7 @@ def _run_single_child(
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
+        _provider = getattr(child, "provider", None)
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -1854,6 +1860,7 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            "provider": _provider if isinstance(_provider, str) else None,
             "exit_reason": exit_reason,
             "tokens": {
                 "input": (

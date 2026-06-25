@@ -27,6 +27,7 @@ from agent.display import (
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
+    _get_delegation_model_label,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
@@ -483,7 +484,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(name, args)
-                agent.tool_progress_callback("tool.started", name, preview, args)
+                agent.tool_progress_callback(
+                    "tool.started", name, preview, args,
+                    provider=getattr(agent, "provider", None),
+                    model=getattr(agent, "model", None),
+                )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -979,7 +984,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not _execution_blocked and agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(function_name, function_args)
-                agent.tool_progress_callback("tool.started", function_name, preview, function_args)
+                agent.tool_progress_callback(
+                    "tool.started", function_name, preview, function_args,
+                    provider=getattr(agent, "provider", None),
+                    model=getattr(agent, "model", None),
+                )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -1173,14 +1182,27 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
+            # Read provider/model from delegation config (what the subagent
+            # will actually run on), NOT from the parent agent — the parent
+            # may be on a completely different model (e.g. deepseek-v4-flash).
+            _dt_provider = None
+            _dt_model = None
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _dt_cfg = _load_cfg().get("delegation", {}) or {}
+                _dt_provider = _dt_cfg.get("provider")
+                _dt_model = _dt_cfg.get("model")
+            except Exception:
+                pass
+            _tag = _get_delegation_model_label(provider=_dt_provider, model=_dt_model)
             if tasks_arg and isinstance(tasks_arg, list):
-                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks · (/agents to monitor)"
+                spinner_label = f"🔀 {_tag}delegating {len(tasks_arg)} tasks · (/agents to monitor)"
             else:
                 goal_preview = (function_args.get("goal") or "")[:30]
                 spinner_label = (
-                    f"🔀 {goal_preview} · (/agents to monitor)"
+                    f"🔀 {_tag}{goal_preview} · (/agents to monitor)"
                     if goal_preview
-                    else "🔀 delegating · (/agents to monitor)"
+                    else f"🔀 {_tag}delegating · (/agents to monitor)"
                 )
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():

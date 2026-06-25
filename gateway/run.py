@@ -14916,6 +14916,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            logger.debug("PROGRESS_CB: event_type=%s tool_name=%s preview_len=%s kwargs_keys=%s",
+                event_type, tool_name, len(preview or ""), list(kwargs.keys()))
             if not progress_queue or not _run_still_current():
                 return
 
@@ -15043,6 +15045,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cmd_short = _cmd_short + " ..."
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
+            # Inject delegation model tag for delegate_task so users see
+            # which LLM model the sub-agent is running on.  Reads from
+            # delegation config explicitly — not from callback kwargs
+            # (which carry the *parent* agent's provider/model, not the
+            # subagent's).
+            if tool_name == "delegate_task":
+                from agent.display import _get_delegation_model_label
+                _dt_provider = None
+                _dt_model = None
+                try:
+                    from hermes_cli.config import load_config as _load_cfg
+                    _dt_cfg = _load_cfg().get("delegation", {}) or {}
+                    _dt_provider = _dt_cfg.get("provider")
+                    _dt_model = _dt_cfg.get("model")
+                except Exception:
+                    pass
+                _dt_tag = _get_delegation_model_label(
+                    provider=_dt_provider,
+                    model=_dt_model,
+                )
+            else:
+                _dt_tag = ""
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if _code_block_full is not None:
@@ -15059,11 +15083,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # detail.  Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                    label = tool_name if not _dt_tag else f"{tool_name} {_dt_tag.strip()}"
+                    msg = f"{emoji} {label}({list(args.keys())})\n{args_str}"
                 elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    msg = f"{emoji} {tool_name}: \"{_dt_tag}{preview}\""
                 else:
-                    msg = f"{emoji} {tool_name}..."
+                    msg = f"{emoji} {tool_name}: {_dt_tag}..."
                 progress_queue.put(msg)
                 return
             
@@ -15079,12 +15104,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                _effective = f"{_dt_tag}{preview}"
+                if len(_effective) > _cap:
+                    _effective = _effective[:_cap - 3] + "..."
+                msg = f"{emoji} {tool_name}: \"{_effective}\""
                 last_was_terminal_block[0] = False
             else:
-                msg = f"{emoji} {tool_name}..."
+                msg = f"{emoji} {tool_name}: {_dt_tag}..."
                 last_was_terminal_block[0] = False
             
             # Dedup: collapse consecutive identical progress messages.
