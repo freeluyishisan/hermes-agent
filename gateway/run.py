@@ -4122,6 +4122,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
+    def _clear_auto_reset_session_state(self, session_key: str) -> None:
+        """Drop session-scoped state that must not cross auto-reset boundaries."""
+        if not session_key:
+            return
+        overrides = getattr(self, "_session_model_overrides", None)
+        if overrides is not None:
+            overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        pending_notes = getattr(self, "_pending_model_notes", None)
+        if pending_notes is not None:
+            pending_notes.pop(session_key, None)
+        # Auto-reset keeps the same session_key but switches to a fresh
+        # session_id. Cached AIAgent instances must not cross that boundary
+        # because they freeze session_id and memory-provider state.
+        self._evict_cached_agent(session_key)
+
     @staticmethod
     def _load_service_tier() -> str | None:
         """Load Priority Processing setting from config.yaml.
@@ -9197,11 +9213,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Treat auto-reset as a full conversation boundary — drop every
             # session-scoped transient state so the fresh session does not
             # inherit the previous conversation's model/reasoning overrides
-            # or a queued "/model switched" note.
+            # or a queued "/model switched" note. The cached AIAgent is also
+            # evicted because session_id is not part of the cache signature.
             self._session_model_overrides.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+            self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
         
         # Emit session:start for new or auto-reset sessions
@@ -9241,17 +9259,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
         
-        # If the previous session expired and was auto-reset, prepend a notice
-        # so the agent knows this is a fresh conversation (not an intentional /reset).
+        # If the previous session expired and was auto-reset, capture a notice
+        # for the agent BUT do NOT modify context_prompt — one-time transient
+        # notices must not contaminate the agent cache signature (which is
+        # computed from combined_ephemeral = context_prompt + ...).
+        # The notice is injected into combined_ephemeral AFTER _sig is computed.
+        _reset_context_note = None
         if _was_auto_reset:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+                _reset_context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+                _reset_context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            context_prompt = context_note + "\n\n" + context_prompt
+                _reset_context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config
@@ -9865,6 +9886,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                reset_context_note=_reset_context_note,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -14122,6 +14144,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``_agent_cache_lock`` on slow socket teardown — mirrors the
         cap-enforcer and idle-sweeper paths.
         """
+        logger.debug("Evicting cached agent for session %s", session_key)
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None
         if _lock:
@@ -14664,6 +14687,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        reset_context_note: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -14683,6 +14707,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                reset_context_note=reset_context_note,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -14693,6 +14718,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                reset_context_note=reset_context_note,
             )
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -14724,6 +14750,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         channel_prompt: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        reset_context_note: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14991,7 +15018,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -15734,6 +15761,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
             agent = None
+            cached = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
@@ -15773,6 +15801,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 session_key, _cached_mc, _current_msg_count,
                             )
                             evicted = self._agent_cache.pop(session_key, None)
+                            cached = None
                             _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                             if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
                                 self._cleanup_agent_resources(_ev_agent)
@@ -15789,10 +15818,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Refresh agent max_iterations from current config
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
-                            logger.debug("Reusing cached agent for session %s", session_key)
+                            logger.info("CACHE HIT: reusing agent for session %s (sig=%s)", session_key, _sig[:8])
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                _cached_for_log = cached
+                if _cached_for_log:
+                    logger.info("CACHE MISS: sig changed (old=%s new=%s)", 
+                               _cached_for_log[1][:8], _sig[:8])
+                else:
+                    logger.info("CACHE MISS: no cached agent for session %s (sig=%s)", session_key, _sig[:8])
+                # Inject auto-reset notice into ephemeral system prompt AFTER
+                # _sig computation so one-time transient notices don't contaminate
+                # the agent cache signature and cause per-turn evictions.
+                # Only needed for fresh agents (cache MISS); cached agents
+                # already have their frozen system prompt.
+                if reset_context_note:
+                    combined_ephemeral = (reset_context_note + "\n\n" + (combined_ephemeral or "")).strip()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -16433,7 +16475,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
-            
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -16471,7 +16513,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
@@ -16970,6 +17012,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
                 _cfg_model = _resolve_gateway_model()
+                # Normalize _cfg_model the same way AIAgent.__init__ does
+                # (run_agent.py:1089-1090), so vendor-prefixed config values
+                # (e.g. "deepseek/deepseek-v4-pro") match the stripped agent
+                # model ("deepseek-v4-pro").  Without this, every turn evicts
+                # the cached agent unconditionally.
+                try:
+                    from hermes_cli.model_normalize import (
+                        _AGGREGATOR_PROVIDERS,
+                        normalize_model_for_provider,
+                    )
+                    _agent_provider = getattr(_agent, 'provider', '') or ''
+                    if _agent_provider not in _AGGREGATOR_PROVIDERS:
+                        _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+                except Exception:
+                    pass
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.

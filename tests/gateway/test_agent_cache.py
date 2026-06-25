@@ -488,6 +488,23 @@ class TestAgentCacheLifecycle:
         with runner._agent_cache_lock:
             assert session_key not in runner._agent_cache
 
+    def test_auto_reset_clears_cached_agent_and_session_state(self):
+        """Auto-reset is a fresh session boundary even when session_key is reused."""
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        agent = MagicMock()
+        runner._agent_cache[session_key] = (agent, "sig")
+        runner._session_model_overrides = {session_key: {"model": "old-model"}}
+        runner._session_reasoning_overrides = {session_key: {"effort": "high"}}
+        runner._pending_model_notes = {session_key: "switched model"}
+
+        runner._clear_auto_reset_session_state(session_key)
+
+        assert session_key not in runner._agent_cache
+        assert session_key not in runner._session_model_overrides
+        assert session_key not in runner._session_reasoning_overrides
+        assert session_key not in runner._pending_model_notes
+
     def test_evict_does_not_affect_other_sessions(self):
         """Evicting one session leaves other sessions cached."""
         runner = _make_runner()
