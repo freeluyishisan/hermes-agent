@@ -77,6 +77,13 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    # This regression is about state.db session rotation/locking, not auxiliary
+    # provider discovery.  ``_compress_context`` lazily probes aux feasibility on
+    # the first compression attempt; in CI that can touch live provider state
+    # (missing keys, payment errors) from both test threads before the stubbed
+    # compressor runs.  Pin the probe as already done so the fixture remains a
+    # deterministic lock/rotation test with no network/auth dependency.
+    setattr(agent, "_compression_feasibility_checked", True)
     return agent
 
 
