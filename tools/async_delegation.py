@@ -37,6 +37,7 @@ logic stays in one place.
 from __future__ import annotations
 
 import logging
+import json
 import threading
 import time
 import uuid
@@ -227,6 +228,21 @@ def dispatch_async_delegation(
 
     executor = _get_executor(max_async_children)
 
+    # ── P1: Persist dispatch record to state.db before touching any thread ────
+    # Written before thread-start so a crash before the thread fires still
+    # leaves a 'running' row that the next startup sweep can find.
+    try:
+        from hermes_state import SessionDB as _SessionDB
+        _sdb_dispatch = _SessionDB()
+        _sdb_dispatch.insert_shadow_clone_task(
+            delegation_id=delegation_id,
+            session_key=session_key,
+            goal=goal,
+        )
+    except Exception as _sdb_err:
+        logger.debug("shadow_clone insert_task failed for %s: %s", delegation_id, _sdb_err)
+    # ─────────────────────────────────────────────────────────────────────────
+
     def _worker() -> None:
         result: Dict[str, Any] = {}
         status = "error"
@@ -265,16 +281,32 @@ def dispatch_async_delegation(
 
 def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
     """Mark a record complete and push the completion event onto the queue."""
+    completion_time = time.time()
     with _records_lock:
         record = _records.get(delegation_id)
         if record is None:
             return
         record["status"] = status
-        record["completed_at"] = time.time()
+        record["completed_at"] = completion_time
+        record["consumed"] = False  # not yet picked up by a poller
         record["interrupt_fn"] = None  # drop the closure; child is done
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
         _prune_completed_locked()
+
+    # ── P1: Persist completion to state.db ────────────────────────────────────
+    try:
+        from hermes_state import SessionDB as _SessionDB
+        _sdb_fin = _SessionDB()
+        _sdb_fin.update_shadow_clone_task(
+            delegation_id,
+            status=status,
+            result_json=json.dumps(result, default=str)[:8000] if result is not None else None,
+            completed_at=completion_time,
+        )
+    except Exception as _sdb_err:
+        logger.debug("shadow_clone update_task failed for %s: %s", delegation_id, _sdb_err)
+    # ─────────────────────────────────────────────────────────────────────────
 
     _push_completion_event(event_record, result, status)
 
@@ -458,6 +490,7 @@ def _finalize_batch(
             return
         record["status"] = status
         record["completed_at"] = time.time()
+        record["consumed"] = False  # not yet picked up by a poller
         record["interrupt_fn"] = None
         event_record = dict(record)
         _prune_completed_locked()
@@ -514,6 +547,41 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "interrupt_fn"}
             for r in _records.values()
         ]
+
+
+def list_async_completions(session_key: str) -> List[Dict[str, Any]]:
+    """Return unconsumed completed delegations for *session_key*.
+
+    Used by the tui_gateway recovery sweep: on session connect, the poller
+    calls this to find any completions that were pushed while no poller was
+    running (session closed, tab disconnected, etc.). Each returned record
+    should be injected as a new turn and then marked consumed via
+    ``mark_async_delegation_consumed()`` to prevent re-injection.
+
+    Safe to call from any thread.
+    """
+    with _records_lock:
+        return [
+            {k: v for k, v in r.items() if k != "interrupt_fn"}
+            for r in _records.values()
+            if r.get("status") != "running"
+            and not r.get("consumed", False)
+            and r.get("session_key", "") == session_key
+        ]
+
+
+def mark_async_delegation_consumed(delegation_id: str) -> bool:
+    """Mark a completed delegation as consumed so it is not re-injected.
+
+    Returns True if the record was found and marked, False if already
+    consumed or not found.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("consumed", False):
+            return False
+        record["consumed"] = True
+        return True
 
 
 def interrupt_all(reason: str = "shutdown") -> int:
