@@ -1303,7 +1303,7 @@ class PhotonAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Any = None,
-        max_retries: int = 1,
+        max_retries: int = 4,
         base_delay: float = 2.0,
     ) -> SendResult:
         """Retry sends without the generic Markdown banner.
@@ -1382,7 +1382,12 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send", body)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            error = str(e)
+            return SendResult(
+                success=False,
+                error=error,
+                retryable=self._is_retryable_sidecar_error(error),
+            )
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
@@ -1431,7 +1436,12 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            error = str(e)
+            return SendResult(
+                success=False,
+                error=error,
+                retryable=self._is_retryable_sidecar_error(error),
+            )
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
