@@ -37,6 +37,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  $localDeviceName,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -46,6 +47,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setLocalDeviceName,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -725,6 +727,13 @@ export function useMessageStream({
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       if (event.type === 'gateway.ready') {
+        const readyPayload = asRecord(payload)
+        const deviceName = typeof readyPayload.device_name === 'string' ? readyPayload.device_name.trim() : ''
+
+        if (deviceName && !$localDeviceName.get()) {
+          setLocalDeviceName(deviceName)
+        }
+
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active

@@ -45,6 +45,7 @@ import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
+  $localDeviceName,
   $busy,
   $connection,
   $messages,
@@ -73,6 +74,12 @@ import type {
   SessionTitleResponse,
   SlashExecResponse
 } from '../../types'
+
+function localSenderDevice(): string | undefined {
+  const deviceName = $localDeviceName.get().trim()
+
+  return deviceName || undefined
+}
 
 interface HandoffResult {
   ok: boolean
@@ -600,12 +607,14 @@ export function usePromptActions({
       }
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const optimisticSenderDevice = localSenderDevice()
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
         parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
+        attachmentRefs,
+        ...(optimisticSenderDevice ? { senderDevice: optimisticSenderDevice } : {})
       })
 
       const releaseBusy = () => {
