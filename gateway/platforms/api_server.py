@@ -3088,6 +3088,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_approval_request(approval_data: Dict[str, Any]) -> None:
+                """Queue approval requests for live response streaming."""
+                event = dict(approval_data or {})
+                event.update({
+                    "event": "approval.request",
+                    "timestamp": time.time(),
+                    "choices": ["once", "session", "always", "deny"],
+                })
+                _stream_q.put(("__approval_request__", event))
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -3100,6 +3110,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                approval_notify_callback=_on_approval_request,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3126,6 +3137,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
             )
 
+        # For non-streaming responses, approvals will be handled through the
+        # agent's built-in approval mechanism; the callback is wired for
+        # consistency and future potential logging/metrics.
+        def _on_approval_request_nonstream(approval_data: Dict[str, Any]) -> None:
+            """Handle approval requests in non-streaming Responses API calls."""
+            # Non-streaming responses don't have an active stream to emit to,
+            # so the approval is handled internally by the agent's approval
+            # system, which may reject automatically or defer based on config.
+            pass
+
         async def _compute_response():
             return await self._run_agent(
                 user_message=user_message,
@@ -3133,6 +3154,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                approval_notify_callback=_on_approval_request_nonstream,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3763,6 +3785,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        approval_notify_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3785,7 +3808,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
             )
+            approval_token = None
+            approval_session_key = gateway_session_key or session_id or ""
             try:
+                if approval_notify_callback:
+                    from tools.approval import (
+                        register_gateway_notify,
+                        set_current_session_key,
+                    )
+                    approval_token = set_current_session_key(approval_session_key)
+                    register_gateway_notify(approval_session_key, approval_notify_callback)
+
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
@@ -3816,7 +3849,26 @@ class APIServerAdapter(BasePlatformAdapter):
                     result["session_id"] = _eff_sid
                 return result, usage
             finally:
-                clear_session_vars(tokens)
+                try:
+                    if approval_notify_callback:
+                        from tools.approval import (
+                            reset_current_session_key,
+                            unregister_gateway_notify,
+                        )
+                        try:
+                            unregister_gateway_notify(approval_session_key)
+                        finally:
+                            if approval_token is not None:
+                                try:
+                                    reset_current_session_key(approval_token)
+                                except Exception:
+                                    pass
+                finally:
+                    if tokens:
+                        try:
+                            clear_session_vars(tokens)
+                        except Exception:
+                            pass
 
         self._inflight_agent_runs += 1
         try:
