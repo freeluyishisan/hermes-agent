@@ -181,12 +181,42 @@ done
 # The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
+actual_hermes_gid=$(id -g hermes)
+actual_hermes_owner="$actual_hermes_uid:$actual_hermes_gid"
+# The canonical hermes-owned subdir list is written inline (literally) in both
+# the ownership probe and the recursive chown below; keep the two lists in sync
+# if it changes (they mirror the s6-setuidgid `mkdir -p` seed block further
+# down). It is spelled out literally rather than via a variable so the
+# subdir-list intent is greppable at each loop.
 needs_chown=false
-if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+# Top-level $HERMES_HOME ownership (the original #35027 path). Compare BOTH
+# uid and gid: a `groupmod -o -g` GID-only remap leaves the uid unchanged, so
+# a uid-only check would miss it (#41699).
+if [ "$(stat -c %u:%g "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_owner" ]; then
     needs_chown=true
 fi
+# Probe the hermes-owned subdirs directly, INDEPENDENTLY of $HERMES_HOME.
+# `usermod -u <new> hermes` re-chowns the hermes home dir ($HERMES_HOME ==
+# /opt/data) to the new UID as a side effect, so after a HERMES_UID/PUID/PGID
+# remap `stat $HERMES_HOME` already matches and the top-level check above is
+# false — but the subdirs below are NOT touched by usermod and remain owned by
+# the build-time UID (10000), leaving the data volume with mixed ownership
+# (#41699). This is the same $HERMES_HOME-gating regression #38556 fixed for
+# the build trees under $INSTALL_DIR; probe the data-volume subdirs directly
+# for the same reason. `groupmod -o -g` likewise does not re-chown files, so a
+# GID-only remap leaves subdir GIDs stale — comparing %u:%g (not just %u)
+# catches that.
+if [ "$needs_chown" = false ]; then
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do
+        if [ -e "$HERMES_HOME/$sub" ] && \
+                [ "$(stat -c %u:%g "$HERMES_HOME/$sub" 2>/dev/null)" != "$actual_hermes_owner" ]; then
+            needs_chown=true
+            break
+        fi
+    done
+fi
 if [ "$needs_chown" = true ]; then
-    echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"
+    echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_owner)"
     # In rootless Podman the container's "root" is mapped to an
     # unprivileged host UID — chown will fail. That's fine: the volume
     # is already owned by the mapped user on the host side.
