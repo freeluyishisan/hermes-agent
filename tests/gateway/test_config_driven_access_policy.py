@@ -261,6 +261,54 @@ def test_non_owning_platform_still_default_denies(monkeypatch):
     assert runner._is_user_authorized(_source(Platform.TELEGRAM)) is False
 
 
+def test_config_allowed_users_authorize_non_owning_platform(monkeypatch):
+    """Config-level allowed_users is a first-class allowlist source."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"allowed_users": ["allowed-user"]},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config, enforces=False)
+
+    listed = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="allowed-user",
+        chat_id="c",
+        user_name="t",
+        chat_type="dm",
+    )
+    stranger = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="stranger",
+        chat_id="c",
+        user_name="t",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(listed) is True
+    assert runner._is_user_authorized(stranger) is False
+
+
+def test_config_allow_all_users_authorizes_non_owning_platform(monkeypatch):
+    """Config-level allow_all_users mirrors the platform allow-all env flag."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"allow_all_users": True},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config, enforces=False)
+
+    assert runner._is_user_authorized(_source(Platform.FEISHU)) is True
+
+
 def test_env_allowlist_still_takes_precedence_for_own_policy_platform(monkeypatch):
     """When an env allowlist IS set, it governs — adapter trust is a fallback.
 

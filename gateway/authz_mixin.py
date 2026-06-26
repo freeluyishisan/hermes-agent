@@ -79,6 +79,21 @@ class GatewayAuthorizationMixin:
             return False
         return bool(getattr(adapter, "enforces_own_access_policy", False))
 
+    def _iter_platform_config_extras(self, platform: Optional[Platform]):
+        if not platform:
+            return
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+        for cfg in configs:
+            extra = getattr(cfg, "extra", None) if cfg else None
+            if isinstance(extra, dict):
+                yield extra
+
     def _adapter_dm_policy(self, platform: Optional[Platform]) -> str:
         """Best-effort read of an own-policy adapter's effective DM policy.
 
@@ -101,15 +116,10 @@ class GatewayAuthorizationMixin:
         adapter = adapters.get(platform)
         policy = getattr(adapter, "_dm_policy", None) if adapter is not None else None
         if policy is None:
-            config = getattr(self, "config", None)
-            platform_cfg = (
-                config.platforms.get(platform)
-                if config is not None and hasattr(config, "platforms")
-                else None
-            )
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-            if isinstance(extra, dict):
+            for extra in self._iter_platform_config_extras(platform):
                 policy = extra.get("dm_policy")
+                if policy is not None:
+                    break
         return str(policy or "").strip().lower()
 
     def _adapter_group_policy(self, platform: Optional[Platform]) -> str:
@@ -132,15 +142,10 @@ class GatewayAuthorizationMixin:
         adapter = adapters.get(platform)
         policy = getattr(adapter, "_group_policy", None) if adapter is not None else None
         if policy is None:
-            config = getattr(self, "config", None)
-            platform_cfg = (
-                config.platforms.get(platform)
-                if config is not None and hasattr(config, "platforms")
-                else None
-            )
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-            if isinstance(extra, dict):
+            for extra in self._iter_platform_config_extras(platform):
                 policy = extra.get("group_policy")
+                if policy is not None:
+                    break
         return str(policy or "").strip().lower()
 
     def _adapter_group_has_sender_allowlist(
@@ -163,15 +168,10 @@ class GatewayAuthorizationMixin:
         adapter = adapters.get(platform)
         groups = getattr(adapter, "_groups", None) if adapter is not None else None
         if groups is None:
-            config = getattr(self, "config", None)
-            platform_cfg = (
-                config.platforms.get(platform)
-                if config is not None and hasattr(config, "platforms")
-                else None
-            )
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-            if isinstance(extra, dict):
+            for extra in self._iter_platform_config_extras(platform):
                 groups = extra.get("groups")
+                if isinstance(groups, dict):
+                    break
         if not isinstance(groups, dict):
             return False
 
@@ -344,6 +344,20 @@ class GatewayAuthorizationMixin:
             except Exception:
                 pass
 
+        config_allows_all = False
+        config_allowed_users = set()
+        for extra in self._iter_platform_config_extras(source.platform):
+            if str(extra.get("allow_all_users") or "").strip().lower() in {"true", "1", "yes", "on"}:
+                config_allows_all = True
+            allowed = extra.get("allowed_users")
+            if isinstance(allowed, str):
+                config_allowed_users.update(uid.strip() for uid in allowed.split(",") if uid.strip())
+            elif isinstance(allowed, (list, tuple, set)):
+                config_allowed_users.update(str(uid).strip() for uid in allowed if str(uid).strip())
+
+        if config_allows_all or "*" in config_allowed_users:
+            return True
+
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
@@ -376,7 +390,13 @@ class GatewayAuthorizationMixin:
             group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
-        if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
+        if (
+            not config_allowed_users
+            and not platform_allowlist
+            and not group_user_allowlist
+            and not group_chat_allowlist
+            and not global_allowlist
+        ):
             # No env allowlist configured. Adapters that own their own
             # config-driven access policy (dm_policy / group_policy /
             # allow_from / group_allow_from) gate access at intake, so for those
@@ -460,6 +480,7 @@ class GatewayAuthorizationMixin:
         # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
         # allowlist and still works everywhere for backward compatibility.
         allowed_ids = set()
+        allowed_ids.update(config_allowed_users)
         if platform_allowlist:
             allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
         if group_user_allowlist:
@@ -530,9 +551,11 @@ class GatewayAuthorizationMixin:
         # Check for an explicit per-platform override first.
         if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:
             platform_cfg = config.platforms.get(platform) if hasattr(config, "platforms") else None
-            if platform_cfg and "unauthorized_dm_behavior" in getattr(platform_cfg, "extra", {}):
-                # Operator explicitly configured behavior for this platform — respect it.
-                return config.get_unauthorized_dm_behavior(platform)
+            configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in configs:
+                if cfg and "unauthorized_dm_behavior" in getattr(cfg, "extra", {}):
+                    # Operator explicitly configured behavior for this platform — respect it.
+                    return config.get_unauthorized_dm_behavior(platform)
 
         # Email is inbox-shaped, not chat-shaped: an agent mailbox may contain
         # unrelated unread human email. Require an explicit per-platform
@@ -552,9 +575,7 @@ class GatewayAuthorizationMixin:
         # so unauthorized DMs should be dropped silently rather than answered
         # with a pairing code. An explicit pairing policy opts back into codes.
         if platform and config and hasattr(config, "platforms"):
-            platform_cfg = config.platforms.get(platform)
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-            if isinstance(extra, dict):
+            for extra in self._iter_platform_config_extras(platform):
                 dm_policy = str(extra.get("dm_policy") or "").strip().lower()
                 if dm_policy == "pairing":
                     return "pair"

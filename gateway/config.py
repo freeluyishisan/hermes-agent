@@ -13,7 +13,7 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Union
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
@@ -368,6 +368,20 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        reserved_keys = {
+            "enabled",
+            "token",
+            "api_key",
+            "home_channel",
+            "reply_to_mode",
+            "gateway_restart_notification",
+            "extra",
+        }
+        extra = dict(data.get("extra", {}) or {})
+        for key, value in data.items():
+            if key not in reserved_keys:
+                extra.setdefault(key, value)
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -375,7 +389,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -499,7 +513,7 @@ class GatewayConfig:
     Manages all platform connections, session policies, and delivery settings.
     """
     # Platform configurations
-    platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
+    platforms: Dict[Platform, Union[PlatformConfig, List[PlatformConfig]]] = field(default_factory=dict)
     
     # Session reset policies by type
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
@@ -557,10 +571,13 @@ class GatewayConfig:
         """Return list of platforms that are enabled and configured."""
         connected = []
         for platform, config in self.platforms.items():
-            if not config.enabled:
-                continue
-            if self._is_platform_connected(platform, config):
-                connected.append(platform)
+            configs = config if isinstance(config, list) else [config]
+            for cfg in configs:
+                if not cfg.enabled:
+                    continue
+                if self._is_platform_connected(platform, cfg):
+                    connected.append(platform)
+                    break
         return connected
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
@@ -608,9 +625,48 @@ class GatewayConfig:
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
         config = self.platforms.get(platform)
+        if isinstance(config, list):
+            for cfg in config:
+                if cfg.home_channel:
+                    return cfg.home_channel
+            return None
         if config:
             return config.home_channel
         return None
+
+    def iter_platform_configs(self, platform: Platform) -> list[PlatformConfig]:
+        """Return every config for a platform, preserving multi-app entries."""
+        config = self.platforms.get(platform)
+        if isinstance(config, list):
+            return [cfg for cfg in config if cfg is not None]
+        if config:
+            return [config]
+        return []
+
+    def get_config_for_adapter_id(
+        self,
+        platform: Platform,
+        adapter_id: Optional[str],
+    ) -> Optional[PlatformConfig]:
+        """Find the platform config that produced a concrete adapter id."""
+        configs = self.iter_platform_configs(platform)
+        if not configs:
+            return None
+        if not adapter_id:
+            return configs[0]
+
+        for cfg in configs:
+            extra = cfg.extra if isinstance(cfg.extra, dict) else {}
+            configured_id = str(
+                extra.get("adapter_id")
+                or extra.get("app_id")
+                or extra.get("bot_id")
+                or extra.get("client_id")
+                or ""
+            ).strip()
+            if configured_id and str(adapter_id) == f"{platform.value}:{configured_id}":
+                return cfg
+        return configs[0]
     
     def get_reset_policy(
         self, 
@@ -633,9 +689,14 @@ class GatewayConfig:
         return self.default_reset_policy
     
     def to_dict(self) -> Dict[str, Any]:
+        def _serialize_platform(config: Union[PlatformConfig, List[PlatformConfig]]) -> Any:
+            if isinstance(config, list):
+                return [cfg.to_dict() for cfg in config]
+            return config.to_dict()
+
         return {
             "platforms": {
-                p.value: c.to_dict() for p, c in self.platforms.items()
+                p.value: _serialize_platform(c) for p, c in self.platforms.items()
             },
             "default_reset_policy": self.default_reset_policy.to_dict(),
             "reset_by_type": {
@@ -665,7 +726,14 @@ class GatewayConfig:
         for platform_name, platform_data in data.get("platforms", {}).items():
             try:
                 platform = Platform(platform_name)
-                platforms[platform] = PlatformConfig.from_dict(platform_data)
+                if isinstance(platform_data, list):
+                    platforms[platform] = [
+                        PlatformConfig.from_dict(item)
+                        for item in platform_data
+                        if isinstance(item, dict)
+                    ]
+                elif isinstance(platform_data, dict):
+                    platforms[platform] = PlatformConfig.from_dict(platform_data)
             except ValueError:
                 pass  # Skip unknown platforms
         
@@ -757,11 +825,13 @@ class GatewayConfig:
         """
         if platform:
             platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "unauthorized_dm_behavior" in platform_cfg.extra:
-                return _normalize_unauthorized_dm_behavior(
-                    platform_cfg.extra.get("unauthorized_dm_behavior"),
-                    self.unauthorized_dm_behavior,
-                )
+            configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in configs:
+                if cfg and "unauthorized_dm_behavior" in cfg.extra:
+                    return _normalize_unauthorized_dm_behavior(
+                        cfg.extra.get("unauthorized_dm_behavior"),
+                        self.unauthorized_dm_behavior,
+                    )
             if platform == Platform.EMAIL:
                 return "ignore"
         return self.unauthorized_dm_behavior
@@ -770,11 +840,13 @@ class GatewayConfig:
         """Return the effective notice-delivery mode for a platform."""
         if platform:
             platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "notice_delivery" in platform_cfg.extra:
-                return _normalize_notice_delivery(
-                    platform_cfg.extra.get("notice_delivery"),
-                    "public",
-                )
+            configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in configs:
+                if cfg and "notice_delivery" in cfg.extra:
+                    return _normalize_notice_delivery(
+                        cfg.extra.get("notice_delivery"),
+                        "public",
+                    )
         return "public"
 
 
@@ -902,6 +974,9 @@ def load_gateway_config() -> GatewayConfig:
                 if not isinstance(source_platforms, dict):
                     return
                 for plat_name, plat_block in source_platforms.items():
+                    if isinstance(plat_block, list):
+                        platforms_data[plat_name] = plat_block
+                        continue
                     if not isinstance(plat_block, dict):
                         continue
                     existing = platforms_data.get(plat_name, {})
@@ -1179,15 +1254,17 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.WEIXIN: "WEIXIN_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
-        if not pconfig.enabled:
-            continue
-        env_name = _token_env_names.get(platform)
-        if env_name and pconfig.token is not None and not pconfig.token.strip():
-            logger.warning(
-                "%s is enabled but %s is empty. "
-                "The adapter will likely fail to connect.",
-                platform.value, env_name,
-            )
+        configs = pconfig if isinstance(pconfig, list) else [pconfig]
+        for cfg in configs:
+            if not cfg.enabled:
+                continue
+            env_name = _token_env_names.get(platform)
+            if env_name and cfg.token is not None and not cfg.token.strip():
+                logger.warning(
+                    "%s is enabled but %s is empty. "
+                    "The adapter will likely fail to connect.",
+                    platform.value, env_name,
+                )
 
     # Reject known-weak placeholder tokens.
     # Ported from openclaw/openclaw#64586: users who copy .env.example
@@ -1200,20 +1277,22 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
     if has_usable_secret is not None:
         for platform, pconfig in config.platforms.items():
-            if not pconfig.enabled:
-                continue
-            env_name = _token_env_names.get(platform)
-            if not env_name:
-                continue
-            token = pconfig.token
-            if token and token.strip() and not has_usable_secret(token, min_length=4):
-                logger.error(
-                    "%s is enabled but %s is set to a placeholder value ('%s'). "
-                    "Set a real bot token before starting the gateway. "
-                    "The adapter will NOT be started.",
-                    platform.value, env_name, token.strip()[:6] + "...",
-                )
-                pconfig.enabled = False
+            configs = pconfig if isinstance(pconfig, list) else [pconfig]
+            for cfg in configs:
+                if not cfg.enabled:
+                    continue
+                env_name = _token_env_names.get(platform)
+                if not env_name:
+                    continue
+                token = cfg.token
+                if token and token.strip() and not has_usable_secret(token, min_length=4):
+                    logger.error(
+                        "%s is enabled but %s is set to a placeholder value ('%s'). "
+                        "Set a real bot token before starting the gateway. "
+                        "The adapter will NOT be started.",
+                        platform.value, env_name, token.strip()[:6] + "...",
+                    )
+                    cfg.enabled = False
 
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
@@ -1225,6 +1304,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             return config.platforms[platform]
 
         platform_config = config.platforms[platform]
+        if isinstance(platform_config, list):
+            for cfg in platform_config:
+                enabled_was_explicit = bool(cfg.extra.get("_enabled_explicit", False))
+                if not cfg.enabled and not enabled_was_explicit:
+                    cfg.enabled = True
+            return platform_config[0] if platform_config else PlatformConfig(enabled=True)
         # Read (don't pop) the explicit-enable marker: the registry-driven
         # plugin-enable pass later in this function also needs it to avoid
         # re-enabling a platform the user explicitly disabled (migrated plugin
@@ -1644,24 +1729,41 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = os.getenv("FEISHU_APP_ID")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
-        if Platform.FEISHU not in config.platforms:
+        feishu_cfg = config.platforms.get(Platform.FEISHU)
+        if feishu_cfg is None:
             config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
-        config.platforms[Platform.FEISHU].extra.update({
-            "app_id": feishu_app_id,
-            "app_secret": feishu_app_secret,
-            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
-        })
-        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
-        if feishu_encrypt_key:
-            config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
-        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
-        if feishu_verification_token:
-            config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
+            feishu_cfg = config.platforms[Platform.FEISHU]
+        if isinstance(feishu_cfg, list):
+            for cfg in feishu_cfg:
+                cfg.enabled = True
+                cfg.extra.setdefault("app_id", feishu_app_id)
+                cfg.extra.setdefault("app_secret", feishu_app_secret)
+                cfg.extra.setdefault("domain", os.getenv("FEISHU_DOMAIN", "feishu"))
+                cfg.extra.setdefault("connection_mode", os.getenv("FEISHU_CONNECTION_MODE", "websocket"))
+                feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+                if feishu_encrypt_key and not cfg.extra.get("encrypt_key"):
+                    cfg.extra["encrypt_key"] = feishu_encrypt_key
+                feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+                if feishu_verification_token and not cfg.extra.get("verification_token"):
+                    cfg.extra["verification_token"] = feishu_verification_token
+        else:
+            feishu_cfg.enabled = True
+            feishu_cfg.extra.update({
+                "app_id": feishu_app_id,
+                "app_secret": feishu_app_secret,
+                "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
+                "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+            })
+            feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+            if feishu_encrypt_key:
+                feishu_cfg.extra["encrypt_key"] = feishu_encrypt_key
+            feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+            if feishu_verification_token:
+                feishu_cfg.extra["verification_token"] = feishu_verification_token
         feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
         if feishu_home:
-            config.platforms[Platform.FEISHU].home_channel = HomeChannel(
+            target_cfg = feishu_cfg[0] if isinstance(feishu_cfg, list) and feishu_cfg else feishu_cfg
+            target_cfg.home_channel = HomeChannel(
                 platform=Platform.FEISHU,
                 chat_id=feishu_home,
                 name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
@@ -1919,6 +2021,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 logger.debug("unknown platform name %r: %s", entry.name, e)
                 continue
             existing_cfg = config.platforms.get(platform)
+            existing_probe_cfg = (
+                existing_cfg[0]
+                if isinstance(existing_cfg, list) and existing_cfg
+                else existing_cfg
+            )
             # Respect an explicit ``enabled: false`` (YAML / gateway.json /
             # dashboard PUT).  ``_enabled_explicit`` is set in
             # load_gateway_config() (via _merge_platform_map / the shared-key
@@ -1927,9 +2034,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # check_fn() / is_connected() pass (e.g. a token is present but the
             # user set telegram.enabled: false). #41112.
             if (
-                existing_cfg is not None
-                and not existing_cfg.enabled
-                and bool((existing_cfg.extra or {}).get("_enabled_explicit", False))
+                existing_probe_cfg is not None
+                and not existing_probe_cfg.enabled
+                and bool((existing_probe_cfg.extra or {}).get("_enabled_explicit", False))
             ):
                 continue
             # Seed candidate extras from ``env_enablement_fn`` so plugins
@@ -1955,7 +2062,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # explicitly configured in YAML / env (existing_cfg with
             # enabled=True means the user wrote it themselves or another
             # env-var bridge enabled it — keep that decision).
-            if existing_cfg is None or not existing_cfg.enabled:
+            if existing_probe_cfg is None or not existing_probe_cfg.enabled:
                 if entry.is_connected is not None:
                     try:
                         # Probe with ``enabled=True`` since we're asking
@@ -1965,8 +2072,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         # ``config.enabled`` being False, which on the
                         # default ``PlatformConfig()`` would fail the
                         # gate even with proper env vars set.
-                        if existing_cfg is not None:
-                            probe_cfg = existing_cfg
+                        if existing_probe_cfg is not None:
+                            probe_cfg = existing_probe_cfg
                             if not probe_cfg.enabled:
                                 probe_cfg = PlatformConfig(
                                     enabled=True,
@@ -2019,7 +2126,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 continue
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+            platform_cfg = config.platforms[platform]
+            if isinstance(platform_cfg, list):
+                targets = platform_cfg
+            else:
+                platform_cfg.enabled = True
+                targets = [platform_cfg]
             # Commit env-seeded extras onto the now-enabled platform.
             # We've already called ``env_enablement_fn`` above (for the
             # probe); reuse that result instead of calling it twice.
@@ -2029,9 +2141,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 # up as a proper HomeChannel dataclass.  Everything else is
                 # merged into ``extra``.
                 home = seed.pop("home_channel", None)
-                config.platforms[platform].extra.update(seed)
-                if isinstance(home, dict) and home.get("chat_id"):
-                    config.platforms[platform].home_channel = HomeChannel(
+                for target in targets:
+                    target.enabled = True
+                    target.extra.update(seed)
+                if isinstance(home, dict) and home.get("chat_id") and targets:
+                    targets[0].home_channel = HomeChannel(
                         platform=platform,
                         chat_id=str(home["chat_id"]),
                         name=str(home.get("name") or "Home"),
@@ -2056,7 +2170,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     relay_url_env = os.getenv("GATEWAY_RELAY_URL", "").strip()
     relay_url_yaml = ""
     existing_relay = config.platforms.get(Platform.RELAY)
-    if existing_relay is not None:
+    if isinstance(existing_relay, list):
+        first_relay = existing_relay[0] if existing_relay else None
+        relay_url_yaml = str((first_relay.extra if first_relay else {}).get("relay_url") or "").strip()
+    elif existing_relay is not None:
         relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip()
     relay_url_val = relay_url_env or relay_url_yaml
     if relay_url_val:
@@ -2064,4 +2181,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
 
     for platform_config in config.platforms.values():
-        platform_config.extra.pop("_enabled_explicit", None)
+        configs = platform_config if isinstance(platform_config, list) else [platform_config]
+        for cfg in configs:
+            cfg.extra.pop("_enabled_explicit", None)

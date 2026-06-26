@@ -1478,6 +1478,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
+        def _iter_allowed_users(raw: Any):
+            if isinstance(raw, str):
+                yield from (item.strip() for item in raw.split(",") if item.strip())
+            elif isinstance(raw, (list, tuple, set)):
+                for item in raw:
+                    text = str(item).strip()
+                    if text:
+                        yield text
+
         # Parse per-group rules from config
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -1527,9 +1536,8 @@ class FeishuAdapter(BasePlatformAdapter):
             ).strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(
-                item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
-                if item.strip()
+                set(_iter_allowed_users(os.getenv("FEISHU_ALLOWED_USERS", "")))
+                | set(_iter_allowed_users(extra.get("allowed_users")))
             ),
             bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
             bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
