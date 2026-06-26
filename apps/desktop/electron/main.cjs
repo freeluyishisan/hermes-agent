@@ -7483,3 +7483,537 @@ app.on('before-quit', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+// ===========================================================================
+// Kanban — SQLite-backed kanban board data, sharing DB with Hermes CLI.
+// ===========================================================================
+const KANBAN_DB_PATH = path.join(HERMES_HOME, 'kanban.db')
+
+function newId() {
+  const ts = Date.now().toString(36)
+  const rnd = crypto.randomBytes(8).toString('hex')
+  return `${ts}-${rnd}`
+}
+
+// Priority mapping: UI uses strings (high/medium/low), DB uses INTEGER.
+const PRIORITY_STR_TO_INT = { low: 0, medium: 1, high: 2 }
+const PRIORITY_INT_TO_STR = ['low', 'medium', 'high']
+
+/** @returns {import('node:sqlite').DatabaseSync} */
+let _kanbanDb = null
+function getKanbanDb() {
+  // Reconnect if prior connection was closed
+  if (_kanbanDb) {
+    try { _kanbanDb.prepare('SELECT 1').all(); return _kanbanDb }
+    catch { _kanbanDb = null }
+  }
+  const { DatabaseSync } = require('node:sqlite')
+  _kanbanDb = new DatabaseSync(KANBAN_DB_PATH)
+  _kanbanDb.exec('PRAGMA journal_mode=WAL')
+  _kanbanDb.exec('PRAGMA foreign_keys=ON')
+  ensureKanbanSchema(_kanbanDb)
+  return _kanbanDb
+}
+
+function ensureKanbanSchema(db) {
+  // kanban_boards — shared board table for the desktop kanban UI
+  db.exec(`CREATE TABLE IF NOT EXISTS kanban_boards (
+    id TEXT PRIMARY KEY,
+    slug TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at INTEGER NOT NULL
+  )`)
+
+  // Ensure a default board always exists
+  const existing = db.prepare("SELECT id FROM kanban_boards WHERE slug = ?").get('default')
+  if (!existing) {
+    db.prepare("INSERT INTO kanban_boards (id, slug, title, description, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      newId(), 'default', 'Default Board', '', Date.now()
+    )
+  }
+
+  // Add columns to the CLI's tasks table that the kanban UI needs.
+  // ALTER TABLE ADD COLUMN is idempotent in SQLite (throws if column exists).
+  for (const stmt of [
+    "ALTER TABLE tasks ADD COLUMN board_id TEXT DEFAULT 'default'",
+    "ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN updated_at INTEGER",
+    "ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN source TEXT DEFAULT 'manual'",
+    "ALTER TABLE tasks ADD COLUMN session_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN profile_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN message_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN assignee_type TEXT DEFAULT 'unassigned'",
+    "ALTER TABLE tasks ADD COLUMN assignee_label TEXT",
+    "ALTER TABLE tasks ADD COLUMN sync_mode TEXT DEFAULT 'manual'",
+    "ALTER TABLE tasks ADD COLUMN external_task_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN external_task_kind TEXT",
+    "ALTER TABLE tasks ADD COLUMN last_synced_at INTEGER"
+  ]) {
+    try { db.exec(stmt) } catch { /* column already exists */ }
+  }
+
+  // Migrate historical task board_ids from random IDs to slugs.
+  // Desktop earlier returned kanban_boards.id (random) to the renderer,
+  // while CLI/Agent tasks use board_id = 'default' (slug). This migration
+  // aligns all existing task board_ids with their board's slug so tasks
+  // are not filtered out by the renderer's boardId === activeBoardId check.
+  const boardsToMigrate = db.prepare("SELECT id, slug FROM kanban_boards WHERE id != slug").all()
+  for (const board of boardsToMigrate) {
+    db.prepare("UPDATE tasks SET board_id = ? WHERE board_id = ?").run(board.slug, board.id)
+  }
+}
+
+/** Convert a DB row to the UI-friendly KanbanTask shape. */
+function rowToKanbanTask(row) {
+  return {
+    id: row.id,
+    boardId: row.board_id || 'default',
+    title: row.title,
+    description: row.body || '',
+    status: row.status || 'todo',
+    priority: PRIORITY_INT_TO_STR[row.priority] || 'medium',
+    assignee: row.assignee || '',
+    createdBy: row.created_by || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
+    archived: Boolean(row.archived),
+    order: row.sort_order || 0,
+    source: row.source || 'manual',
+    sessionId: row.session_id || undefined,
+    profileId: row.profile_id || undefined,
+    messageId: row.message_id || undefined,
+    assigneeType: row.assignee_type || 'unassigned',
+    assigneeLabel: row.assignee_label || undefined,
+    syncMode: row.sync_mode || 'manual',
+    externalTaskId: row.external_task_id || undefined,
+    externalTaskKind: row.external_task_kind || undefined,
+    lastSyncedAt: row.last_synced_at || undefined
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Input sanitization
+// ---------------------------------------------------------------------------
+
+const VALID_STATUSES = new Set(['todo', 'ready', 'running', 'review', 'done', 'blocked'])
+const VALID_PRIORITIES = new Set(['low', 'medium', 'high'])
+
+function sanitizeString(value, maxLength) {
+  return String(value || '').trim().slice(0, maxLength)
+}
+
+function sanitizeStatus(value) {
+  return VALID_STATUSES.has(value) ? value : 'todo'
+}
+
+function sanitizePriority(value) {
+  return VALID_PRIORITIES.has(value) ? value : 'medium'
+}
+
+function sanitizeTaskInput(input) {
+  const validSources = new Set(['manual', 'chat', 'agent', 'cron'])
+  const validAssigneeTypes = new Set(['user', 'agent', 'unassigned'])
+  const validSyncModes = new Set(['manual', 'linked', 'mirrored'])
+  return {
+    title: sanitizeString(input.title, 200) || 'Untitled',
+    description: String(input.description || '').slice(0, 5000),
+    status: sanitizeStatus(input.status),
+    priority: sanitizePriority(input.priority),
+    assignee: sanitizeString(input.assignee, 120),
+    labels: Array.isArray(input.labels)
+      ? input.labels.map(label => sanitizeString(label, 40)).filter(Boolean).slice(0, 20)
+      : []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IPC handlers
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('hermes:kanban:boards', () => {
+  const db = getKanbanDb()
+  return db.prepare('SELECT id, slug, title, description, created_at FROM kanban_boards ORDER BY created_at ASC').all().map(r => ({
+    id: r.slug,
+    title: r.title,
+    description: r.description,
+    createdAt: r.created_at
+  }))
+})
+
+ipcMain.handle('hermes:kanban:createBoard', (_event, { title, description }) => {
+  const db = getKanbanDb()
+  const safeTitle = sanitizeString(title, 200) || 'Untitled Board'
+  const safeDesc = sanitizeString(description, 1000)
+  const slug = safeTitle
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'board'
+  const id = newId()
+  const now = Date.now()
+  db.prepare('INSERT INTO kanban_boards (id, slug, title, description, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    id, slug, safeTitle, safeDesc, now
+  )
+  return { id: slug, title: safeTitle, description: safeDesc, createdAt: now }
+})
+
+ipcMain.handle('hermes:kanban:deleteBoard', (_event, slug) => {
+  const db = getKanbanDb()
+  db.exec('BEGIN')
+  try {
+    db.prepare("UPDATE tasks SET board_id = 'default' WHERE board_id = ?").run(slug)
+    db.prepare('DELETE FROM kanban_boards WHERE slug = ?').run(slug)
+    db.exec('COMMIT')
+    return { ok: true }
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+})
+
+ipcMain.handle('hermes:kanban:tasks', (_event, boardId) => {
+  const db = getKanbanDb()
+  const rows = db.prepare('SELECT * FROM tasks WHERE board_id = ? AND archived = 0 ORDER BY created_at DESC').all(boardId)
+  return rows.map(rowToKanbanTask)
+})
+
+ipcMain.handle('hermes:kanban:allTasks', () => {
+  const db = getKanbanDb()
+  const rows = db.prepare('SELECT * FROM tasks WHERE archived = 0 ORDER BY created_at DESC').all()
+  return rows.map(rowToKanbanTask)
+})
+
+ipcMain.handle('hermes:kanban:createTask', (_event, taskData) => {
+  const db = getKanbanDb()
+  const safe = sanitizeTaskInput(taskData)
+  const id = newId()
+  const now = Date.now()
+  const priority = PRIORITY_STR_TO_INT[safe.priority] !== undefined ? PRIORITY_STR_TO_INT[safe.priority] : 1
+  const assignee = safe.assignee
+  const lastSyncedAt = taskData.lastSyncedAt ||
+    (taskData.syncMode === 'linked' || taskData.syncMode === 'mirrored' ? now : null)
+
+  db.prepare(`INSERT INTO tasks
+    (id, title, body, status, priority, assignee, created_by, board_id, created_at, updated_at, archived, workspace_kind, sort_order,
+     source, session_id, profile_id, message_id, assignee_type, assignee_label, sync_mode,
+     external_task_id, external_task_kind, last_synced_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'scratch', 0,
+     ?, ?, ?, ?, ?, ?, ?,
+     ?, ?, ?)`).run(
+    id,
+    safe.title,
+    safe.description,
+    safe.status,
+    priority,
+    assignee,
+    assignee,
+    taskData.boardId || 'default',
+    now,
+    now,
+    taskData.source || 'manual',
+    taskData.sessionId || null,
+    taskData.profileId || null,
+    taskData.messageId || null,
+    taskData.assigneeType || 'unassigned',
+    taskData.assigneeLabel || null,
+    taskData.syncMode || 'manual',
+    taskData.externalTaskId || null,
+    taskData.externalTaskKind || null,
+    lastSyncedAt
+  )
+
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+  return rowToKanbanTask(row)
+})
+
+ipcMain.handle('hermes:kanban:updateTask', (_event, id, updates) => {
+  const db = getKanbanDb()
+  const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+  if (!existing) throw new Error(`Task ${id} not found`)
+
+  const assignments = []
+  const params = []
+
+  if (updates.title !== undefined) { assignments.push('title = ?'); params.push(sanitizeString(updates.title, 200)) }
+  if (updates.description !== undefined) { assignments.push('body = ?'); params.push(String(updates.description).slice(0, 5000)) }
+  if (updates.status !== undefined) { assignments.push('status = ?'); params.push(sanitizeStatus(updates.status)) }
+  if (updates.assignee !== undefined) { assignments.push('assignee = ?'); params.push(sanitizeString(updates.assignee, 120)) }
+  if (updates.priority !== undefined) {
+    const p = PRIORITY_STR_TO_INT[sanitizePriority(updates.priority)]
+    if (p !== undefined) { assignments.push('priority = ?'); params.push(p) }
+  }
+  if (updates.archived !== undefined) { assignments.push('archived = ?'); params.push(updates.archived ? 1 : 0) }
+  if (updates.order !== undefined) { assignments.push('sort_order = ?'); params.push(Number(updates.order) || 0) }
+  if (updates.syncMode !== undefined) { assignments.push('sync_mode = ?'); params.push(updates.syncMode) }
+  if (updates.lastSyncedAt !== undefined) { assignments.push('last_synced_at = ?'); params.push(updates.lastSyncedAt) }
+  if (updates.externalTaskId !== undefined) { assignments.push('external_task_id = ?'); params.push(updates.externalTaskId) }
+  if (updates.externalTaskKind !== undefined) { assignments.push('external_task_kind = ?'); params.push(updates.externalTaskKind) }
+  if (updates.assigneeType !== undefined) { assignments.push('assignee_type = ?'); params.push(updates.assigneeType) }
+  if (updates.assigneeLabel !== undefined) { assignments.push('assignee_label = ?'); params.push(updates.assigneeLabel) }
+
+  if (assignments.length > 0) {
+    assignments.push('updated_at = ?')
+    params.push(Date.now())
+    params.push(id)
+    db.prepare(`UPDATE tasks SET ${assignments.join(', ')} WHERE id = ?`).run(...params)
+  }
+
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+  return rowToKanbanTask(row)
+})
+
+ipcMain.handle('hermes:kanban:deleteTask', (_event, id) => {
+  const db = getKanbanDb()
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+  db.prepare('DELETE FROM task_comments WHERE task_id = ?').run(id)
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:kanban:reorderTasks', (_event, boardId, updates) => {
+  const db = getKanbanDb()
+  if (!Array.isArray(updates)) throw new Error('updates must be an array')
+
+  const stmt = db.prepare(
+    'UPDATE tasks SET status = ?, sort_order = ?, updated_at = ? WHERE id = ?'
+  )
+  const now = Date.now()
+
+  db.exec('BEGIN')
+  try {
+    for (const { id, status, order } of updates) {
+      const safeStatus = sanitizeStatus(status)
+      stmt.run(safeStatus, Number(order) || 0, now, id)
+    }
+    db.exec('COMMIT')
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+
+  // Return updated tasks for this board, sorted by order
+  const rows = db.prepare(
+    'SELECT * FROM tasks WHERE board_id = ? AND archived = 0 ORDER BY sort_order ASC, created_at ASC'
+  ).all(boardId)
+  return rows.map(rowToKanbanTask)
+})
+
+ipcMain.handle('hermes:kanban:comments', (_event, taskId) => {
+  const db = getKanbanDb()
+  const rows = db.prepare('SELECT id, task_id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC').all(taskId)
+  return rows.map(r => ({
+    id: String(r.id),
+    taskId: r.task_id,
+    author: r.author || '',
+    body: r.body || '',
+    createdAt: r.created_at
+  }))
+})
+
+ipcMain.handle('hermes:kanban:addComment', (_event, { taskId, author, body }) => {
+  const db = getKanbanDb()
+  const now = Date.now()
+  const safeAuthor = sanitizeString(author, 120)
+  const safeBody = String(body || '').slice(0, 5000)
+  const result = db.prepare('INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)').run(
+    taskId, safeAuthor, safeBody, now
+  )
+  return {
+    id: result.lastInsertRowid.toString(),
+    taskId,
+    author: safeAuthor,
+    body: safeBody,
+    createdAt: now
+  }
+})
+
+ipcMain.handle('hermes:kanban:deleteComment', (_event, id) => {
+  const db = getKanbanDb()
+  db.prepare('DELETE FROM task_comments WHERE id = ?').run(Number(id))
+  return { ok: true }
+})
+
+// ---------------------------------------------------------------------------
+// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00).
+// A docs/dashboard "Send to App" button opens this URL; we route it into the
+// running app's chat composer. Three delivery paths: macOS 'open-url',
+// Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
+// ---------------------------------------------------------------------------
+const HERMES_PROTOCOL = 'hermes'
+let _pendingDeepLink = null
+let _rendererReadyForDeepLink = false
+
+function _extractDeepLink(argv) {
+  if (!Array.isArray(argv)) return null
+  return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
+}
+
+function handleDeepLink(url) {
+  if (!url || typeof url !== 'string') return
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch {
+    rememberLog(`[deeplink] ignoring malformed url: ${url}`)
+    return
+  }
+  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
+  const kind = parsed.hostname || ''
+  const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
+  const params = {}
+  parsed.searchParams.forEach((v, k) => {
+    params[k] = v
+  })
+  const payload = { kind, name, params }
+
+  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
+    _pendingDeepLink = payload
+    return
+  }
+  try {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+    mainWindow.webContents.send('hermes:deep-link', payload)
+    rememberLog(`[deeplink] delivered ${kind}/${name}`)
+  } catch (err) {
+    rememberLog(`[deeplink] delivery failed: ${err.message}`)
+  }
+}
+
+// Renderer calls this (via IPC) once it has mounted its deep-link listener, so
+// a link that arrived during boot/install is flushed exactly once.
+ipcMain.handle('hermes:deep-link-ready', () => {
+  _rendererReadyForDeepLink = true
+  if (_pendingDeepLink) {
+    const queued = _pendingDeepLink
+    _pendingDeepLink = null
+    handleDeepLink(
+      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
+        (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
+    )
+  }
+  return { ok: true }
+})
+
+function registerDeepLinkProtocol() {
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      // Dev: register with the electron exec path + entry script so the OS can
+      // relaunch us with the URL.
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+    } else {
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
+    }
+  } catch (err) {
+    rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
+  }
+}
+
+// Single-instance lock: deep links on a running app (Win/Linux) arrive as a
+// second-instance argv. Without the lock a second `hermes://` launch spawns a
+// whole new app instead of routing into the running one.
+const _gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!_gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = _extractDeepLink(argv)
+    if (url) handleDeepLink(url)
+    else if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
+// macOS delivers deep links via 'open-url' — register early (can fire before
+// whenReady; handleDeepLink queues until the renderer is ready).
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleDeepLink(url)
+})
+
+app.whenReady().then(() => {
+  if (IS_MAC) {
+    Menu.setApplicationMenu(buildApplicationMenu())
+  } else {
+    Menu.setApplicationMenu(null)
+  }
+  installMediaPermissions()
+  registerMediaProtocol()
+  registerDeepLinkProtocol()
+  ensureWslWindowsFonts()
+  configureSpellChecker()
+  registerPowerResumeListeners()
+  createWindow()
+
+  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
+  const _coldStartLink = _extractDeepLink(process.argv)
+  if (_coldStartLink) handleDeepLink(_coldStartLink)
+
+  app.on('activate', () => {
+    // Recreate the primary window if it's gone. Guard on mainWindow directly
+    // (not just total window count) so a dock click still restores the main
+    // window when only secondary session windows remain open.
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow()
+    } else {
+      focusWindow(mainWindow)
+    }
+  })
+})
+
+// Seed Chromium's spellchecker with the system locale (falling back to en-US).
+// On macOS Electron uses the native spellchecker which ignores this list, but
+// on Windows/Linux Chromium downloads Hunspell dictionaries on demand and
+// won't enable any without an explicit language.
+function configureSpellChecker() {
+  try {
+    const defaultSession = session.defaultSession
+
+    if (!defaultSession || typeof defaultSession.setSpellCheckerLanguages !== 'function') {
+      return
+    }
+
+    const available = defaultSession.availableSpellCheckerLanguages || []
+    const locale = (app.getLocale && app.getLocale()) || 'en-US'
+    const candidates = [locale, locale.split('-')[0], 'en-US', 'en']
+    const chosen = candidates.find(lang => available.includes(lang)) || 'en-US'
+
+    defaultSession.setSpellCheckerLanguages([chosen])
+  } catch (error) {
+    rememberLog(`Spellchecker setup failed: ${error.message}`)
+  }
+}
+
+app.on('before-quit', () => {
+  // Quitting mid-install should stop the installer, not orphan it.
+  if (bootstrapAbortController) {
+    try {
+      bootstrapAbortController.abort()
+    } catch {
+      void 0
+    }
+  }
+
+  if (desktopLogFlushTimer) {
+    clearTimeout(desktopLogFlushTimer)
+    desktopLogFlushTimer = null
+  }
+  flushDesktopLogBufferSync()
+  closePreviewWatchers()
+
+  // Kill open PTYs before environment teardown to avoid the node-pty#904
+  // ThreadSafeFunction SIGABRT race.
+  for (const id of [...terminalSessions.keys()]) {
+    disposeTerminalSession(id)
+  }
+
+  if (hermesProcess && !hermesProcess.killed) {
+    hermesProcess.kill('SIGTERM')
+  }
+  stopAllPoolBackends()
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})

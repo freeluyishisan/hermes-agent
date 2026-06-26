@@ -473,6 +473,10 @@ export function DesktopController() {
       const jobs = await getCronJobs()
 
       setCronJobs(jobs)
+      // Sync cron failures to Kanban blocked tasks
+      import('@/lib/kanban-sync').then(({ syncCronFailureToKanban }) => {
+        void syncCronFailureToKanban(jobs)
+      })
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
