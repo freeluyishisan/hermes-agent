@@ -584,6 +584,136 @@ class TestSend:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_approval_confirmation_uses_proactive_send(self):
+        """Regression: force_proactive_send=True must use APP_CMD_SEND to avoid
+        consuming the req_id that the post-approval stream needs. Passive reply
+        on the same req_id causes WeCom to render the stream seed as empty bubble."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # Simulate a cached req_id from the user's /approve message
+        adapter._last_chat_req_ids["chat-123"] = "req-approve"
+        adapter._send_request = AsyncMock(return_value={"headers": {"req_id": "req-approve"}, "errcode": 0})
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-approve"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "✅ Approved 1 command. Continuing...",
+            metadata={"is_approval_prompt": True, "force_proactive_send": True},
+        )
+
+        assert result.success is True
+        # Must use APP_CMD_SEND (proactive), NOT _send_reply_request (passive)
+        adapter._send_request.assert_awaited_once_with(
+            APP_CMD_SEND,
+            {
+                "chatid": "chat-123",
+                "msgtype": "markdown",
+                "markdown": {"content": "✅ Approved 1 command. Continuing..."},
+            },
+        )
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_approval_request_prompt_uses_passive_reply(self):
+        """is_approval_prompt alone (without force_proactive_send) must still use
+        passive reply. The initial approval *request* prompt needs passive reply
+        because groups cannot use APP_CMD_SEND."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-chat"] = "req-user-msg"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-user-msg"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send(
+            "group-chat",
+            "⚠️ Dangerous command requires approval...",
+            metadata={"is_approval_prompt": True},  # No force_proactive_send
+        )
+
+        assert result.success is True
+        # Should use passive reply (preserving req_id for group delivery)
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_with_active_stream_still_uses_passive_reply(self):
+        """send() should NOT force proactive when a stream is active —
+        that's too broad and breaks group delivery. Only explicit
+        force_proactive_send metadata triggers proactive mode."""
+        from gateway.platforms.wecom import WeComAdapter, StreamTurn
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-123"] = "req-latest"
+        # Simulate an active stream turn for this chat
+        turn = StreamTurn("chat-123", "req-latest")
+        adapter._stream_turns["chat-123:turn-1"] = turn
+
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-latest"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send("chat-123", "Some status message")
+
+        assert result.success is True
+        # Should still use passive reply — active stream doesn't force proactive
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_force_proactive_falls_back_to_passive_for_groups(self):
+        """Regression: force_proactive_send must NOT use APP_CMD_SEND in group chats.
+        WeCom AI Bots cannot initiate APP_CMD_SEND in groups — only passive reply
+        (APP_CMD_RESPONSE) bound to a req_id works."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-chat"] = "req-approve"
+        # Mark this chat as a group
+        adapter._group_chat_ids.add("group-chat")
+
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-approve"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send(
+            "group-chat",
+            "✅ Approved 1 command. Continuing...",
+            metadata={"is_approval_prompt": True, "force_proactive_send": True},
+        )
+
+        assert result.success is True
+        # Group chats must fall back to passive reply even with force_proactive_send
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_group_send_fails_early_without_req_id(self):
+        """Group chats with no cached req_id must fail with a clear error
+        instead of attempting APP_CMD_SEND (which WeCom will reject)."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # No req_id cached for this group
+        adapter._group_chat_ids.add("group-no-req")
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send("group-no-req", "hello group")
+
+        assert result.success is False
+        assert "req_id" in (result.error or "").lower()
+        # Should NOT attempt APP_CMD_SEND
+        adapter._send_request.assert_not_awaited()
+
+
 class TestInboundMessages:
     @pytest.mark.asyncio
     async def test_on_message_builds_event(self):
@@ -953,3 +1083,518 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+# === NATIVE STREAMING (msgtype: stream) ===
+
+
+class TestWeComNativeStreamingCapability:
+    """SUPPORTS_NATIVE_STREAMING + supports_native_streaming() probe."""
+
+    def test_class_attribute_declares_native_streaming(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.SUPPORTS_NATIVE_STREAMING is True
+
+    def test_supports_native_streaming_returns_true_for_dm(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter.supports_native_streaming(chat_type="dm") is True
+
+    def test_supports_native_streaming_returns_true_for_group(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter.supports_native_streaming(chat_type="group") is True
+
+    def test_max_stream_content_length_is_20480(self):
+        from gateway.platforms.wecom import (
+            MAX_STREAM_CONTENT_LENGTH, WeComAdapter,
+        )
+
+        assert MAX_STREAM_CONTENT_LENGTH == 20480
+        assert WeComAdapter.MAX_STREAM_CONTENT_LENGTH == 20480
+
+    def test_stream_expired_errcode_constant(self):
+        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE
+
+        assert STREAM_EXPIRED_ERRCODE == 846608
+
+# === STREAM TESTS PLACEHOLDER ===
+
+
+class TestResolveStreamReqId:
+    """`_resolve_stream_req_id` precedence: reply_to → cached chat → None."""
+
+    def test_prefers_explicit_reply_to(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-123"] = "explicit-req"
+        adapter._last_chat_req_ids["chat-1"] = "cached-req"
+
+        assert adapter._resolve_stream_req_id("chat-1", "msg-123") == "explicit-req"
+
+    def test_falls_back_to_cached_chat_req_id(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "cached-req"
+
+        assert adapter._resolve_stream_req_id("chat-1", reply_to=None) == "cached-req"
+
+    def test_returns_none_when_no_anchor(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter._resolve_stream_req_id("unknown-chat", None) is None
+
+    def test_quoted_reply_to_falls_through_to_chat_cache(self):
+        """``quote:msg-id`` (quote-context marker) is not a real reply anchor."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "cached-req"
+
+        assert adapter._resolve_stream_req_id("chat-1", "quote:m-1") == "cached-req"
+
+
+# === LIFECYCLE TESTS PLACEHOLDER ===
+
+
+class TestSendStreamFrame:
+    """`send_stream_frame` lifecycle: init → cumulative updates → finalize."""
+
+    @staticmethod
+    def _mock_send_json_with_immediate_ack(adapter):
+        """Mock _send_reply_queued to bypass ack tracking entirely.
+
+        For tests that verify frame content/ordering, we don't need actual
+        ack tracking — just record what was sent and always succeed.
+        """
+        sent_frames = []
+
+        async def mock_send_reply_queued(reply_req_id, body, *, is_final=False, skip_if_pending=False):
+            sent_frames.append({
+                "req_id": reply_req_id,
+                "body": body,
+                "is_final": is_final,
+            })
+            return {"errcode": 0, "errmsg": "ok"}
+
+        adapter._send_reply_queued = AsyncMock(side_effect=mock_send_reply_queued)
+        adapter._sent_frames = sent_frames
+
+    @pytest.mark.asyncio
+    async def test_first_call_seeds_thinking_frame_then_returns_true(self):
+        """First frame for a chat sends <think></think> seed.
+
+        Bypasses ack tracking so both seed and content are sent in same call.
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        # Mock _send_reply_queued to bypass ack tracking
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
+
+        assert ok is True
+        # seed + content = 2 frames
+        assert len(adapter._sent_frames) == 2
+        seed_frame = adapter._sent_frames[0]
+        assert seed_frame["body"]["msgtype"] == "stream"
+        assert seed_frame["body"]["stream"]["content"] == "<think></think>"
+        assert seed_frame["body"]["stream"]["finish"] is False
+
+        content_frame = adapter._sent_frames[1]
+        assert content_frame["body"]["stream"]["content"] == "hello"
+        assert content_frame["body"]["stream"]["finish"] is False
+
+    @pytest.mark.asyncio
+    async def test_first_and_second_call_share_stream_id(self):
+        """Successive frames use the same stream_id."""
+        from gateway.platforms.wecom import WeComAdapter, STREAM_FRAME_SKIP_WINDOW
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        # Immediate ack so all frames are sent (no pending-skip)
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        await adapter.send_stream_frame("alpha", chat_id="chat-1")
+        # Wait past the skip window so the second frame is not dropped by throttle.
+        await asyncio.sleep(STREAM_FRAME_SKIP_WINDOW + 0.01)
+        await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
+
+        # seed + alpha + alpha beta = 3 frames
+        assert len(adapter._sent_frames) == 3
+        ids = [frame["body"]["stream"]["id"] for frame in adapter._sent_frames]
+        assert ids[0] == ids[1] == ids[2]
+        assert ids[0].startswith("stream_")
+
+    @pytest.mark.asyncio
+    async def test_intermediate_frame_skipped_when_pending_ack(self):
+        """Intermediate frames are skipped if a prior frame's ack is pending.
+
+        This is the new ack-tracking semantics: if the seed frame's ack hasn't
+        returned yet, the next intermediate frame is skipped (returns success
+        but doesn't actually send). This prevents errcode 6000 version conflict.
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()  # No auto-ack — pending stays pending
+        adapter._ws = MagicMock(closed=False)
+
+        await adapter.send_stream_frame("alpha", chat_id="chat-1")
+        # Seed frame sent, pending_ack is set. Immediately send another:
+        ok = await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
+
+        assert ok is True  # returns True (skip is silent success)
+        # Only seed frame sent; second was skipped due to pending ack.
+        assert adapter._send_json.await_count == 1
+
+        # accumulated_text still updated in StreamTurn despite skip.
+        turn = list(adapter._stream_turns.values())[0]
+        assert turn.accumulated_text == "alpha beta"
+
+    @pytest.mark.asyncio
+    async def test_intermediate_frame_cap_drops_excess(self):
+        """After MAX_INTERMEDIATE_FRAMES, further intermediate frames are dropped."""
+        from gateway.platforms.wecom import WeComAdapter, MAX_INTERMEDIATE_FRAMES
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        # Auto-ack so seed + first frame go through
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        # First call creates turn + seed + content frame.
+        turn_id = "cap-test"
+        await adapter.send_stream_frame("first", chat_id="chat-1", turn_id=turn_id)
+        turn_key = f"chat-1:{turn_id}"
+        turn = adapter._stream_turns[turn_key]
+
+        # Artificially set counter to the cap.
+        turn._intermediate_frames_sent = MAX_INTERMEDIATE_FRAMES
+        turn._last_frame_sent_at = 0  # clear time throttle
+
+        # Record count BEFORE the overflow frame to assert it was truly skipped.
+        before_overflow = len(adapter._sent_frames)
+
+        # Next intermediate frame should be dropped.
+        ok = await adapter.send_stream_frame("overflow", chat_id="chat-1", turn_id=turn_id)
+        assert ok is True
+        assert turn.accumulated_text == "overflow"
+        # No additional frame sent — overflow was dropped.
+        assert len(adapter._sent_frames) == before_overflow
+
+        # Finalize still goes through unconditionally.
+        ok = await adapter.send_stream_frame("final", chat_id="chat-1", finalize=True, turn_id=turn_id)
+        assert ok is True
+
+    @pytest.mark.asyncio
+    async def test_finalize_sends_finish_true_and_resets_state(self):
+        """Finalize frame waits for pending ack, sends finish=true, cleans up turn."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+        # Auto-ack so seed + content + finalize all go through
+        self._mock_send_json_with_immediate_ack(adapter)
+
+        # With turn_id, creates independent turn
+        turn_id = "test-turn-1"
+        await adapter.send_stream_frame("partial", chat_id="chat-1", turn_id=turn_id)
+        turn_key = "chat-1:test-turn-1"
+        assert turn_key in adapter._stream_turns
+        turn = adapter._stream_turns[turn_key]
+        assert turn.stream_id is not None
+
+        ok = await adapter.send_stream_frame(
+            "partial final", chat_id="chat-1", finalize=True, turn_id=turn_id,
+        )
+
+        assert ok is True
+        # After finalize, turn should be cleaned up
+        assert turn_key not in adapter._stream_turns
+        # Finalize goes through _send_reply_queued (mocked).
+        # Find the finalize frame (is_final=True)
+        finalize_frames = [
+            f for f in adapter._sent_frames
+            if f["body"].get("stream", {}).get("finish") is True
+        ]
+        assert len(finalize_frames) == 1
+        assert finalize_frames[0]["body"]["stream"]["content"] == "partial final"
+
+# === FAILURE TESTS PLACEHOLDER ===
+
+
+class TestSendStreamFrameFailures:
+    """Behavior when no req_id, 846608 expiry, or generic transport errors."""
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_req_id_available(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # No reply_to, nothing in _last_chat_req_ids.
+        adapter._send_reply_request = AsyncMock()
+
+        ok = await adapter.send_stream_frame("hi", chat_id="unknown-chat")
+
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_chat_id_missing_on_first_call(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock()
+
+        ok = await adapter.send_stream_frame("hi", chat_id=None)
+
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_846608_marks_chat_expired_and_returns_false(self):
+        """846608 on finalize frame marks the chat expired and returns False."""
+        from gateway.platforms.wecom import (
+            STREAM_EXPIRED_ERRCODE, WeComAdapter,
+        )
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._ws = MagicMock(closed=False)
+
+        # Mock _send_reply_queued: intermediate succeeds, final returns 846608
+        async def mock_queued(reply_req_id, body, *, is_final=False, skip_if_pending=False):
+            if is_final:
+                return {"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"}
+            return {"errcode": 0, "errmsg": "ok"}
+
+        adapter._send_reply_queued = AsyncMock(side_effect=mock_queued)
+
+        # First call (seed + content) succeeds
+        turn_id = "test-turn-2"
+        await adapter.send_stream_frame("hello", chat_id="chat-1", turn_id=turn_id)
+        # Now try to finalize — ack returns 846608.
+        ok = await adapter.send_stream_frame("hello final", chat_id="chat-1", finalize=True, turn_id=turn_id)
+
+        assert ok is False
+        assert "chat-1" in adapter._stream_expired_chats
+        # This specific turn should be cleaned up
+        turn_key = "chat-1:test-turn-2"
+        assert turn_key not in adapter._stream_turns
+
+    @pytest.mark.asyncio
+    async def test_subsequent_call_to_expired_chat_short_circuits(self):
+        """Once a chat is in ``_stream_expired_chats``, send_stream_frame
+        bails immediately for new turns without touching the WS."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_expired_chats.add("chat-1")
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock()
+
+        # Without turn_id: short-circuits immediately
+        ok = await adapter.send_stream_frame("hi", chat_id="chat-1")
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
+
+        # With a new turn_id: also short-circuits (can't create new turn)
+        ok = await adapter.send_stream_frame("hi", chat_id="chat-1", turn_id="new-turn")
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inbound_message_clears_expired_marker(self):
+        """A fresh inbound req_id must resurrect the stream channel."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_expired_chats.add("chat-1")
+
+        adapter._remember_chat_req_id("chat-1", "fresh-req-id")
+
+        assert "chat-1" not in adapter._stream_expired_chats
+
+    @pytest.mark.asyncio
+    async def test_generic_transport_error_resets_state(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=RuntimeError("ws disconnected"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_generic_transport_error_resets_state(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=RuntimeError("ws disconnected"),
+        )
+
+        turn_id = "test-turn-3"
+        ok = await adapter.send_stream_frame("hi", chat_id="chat-1", turn_id=turn_id)
+
+        assert ok is False
+        # Generic error cleans up this specific turn but does NOT mark chat as expired
+        turn_key = "chat-1:test-turn-3"
+        assert turn_key not in adapter._stream_turns
+        assert "chat-1" not in adapter._stream_expired_chats
+
+# === SEND_TYPING TESTS PLACEHOLDER ===
+
+
+class TestSendTypingTriggersThinking:
+    """``send_typing`` is a no-op — typing is handled by stream consumer."""
+
+    @pytest.mark.asyncio
+    async def test_send_typing_is_noop(self):
+        """send_typing must not open any stream — the consumer seed frame does."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
+
+        await adapter.send_typing("chat-1")
+
+        adapter._send_json.assert_not_awaited()
+        # No stream turns created
+        assert len(adapter._stream_turns) == 0
+
+    @pytest.mark.asyncio
+    async def test_send_typing_does_not_raise(self):
+        """send_typing must never raise regardless of state."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        await adapter.send_typing("chat-1")
+        await adapter.send_typing("")
+        await adapter.send_typing(None)  # type: ignore
+
+
+class TestStreamContentTruncation:
+    """Bytes (not codepoints) are truncated to MAX_STREAM_CONTENT_LENGTH."""
+
+    def test_ascii_below_limit_passes_through(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        out = WeComAdapter._truncate_stream_content("hello", 1000)
+        assert out == "hello"
+
+    def test_ascii_above_limit_is_byte_capped(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        big = "x" * 30000
+        out = WeComAdapter._truncate_stream_content(big, 20480)
+        assert len(out.encode("utf-8")) <= 20480
+
+    def test_multibyte_truncation_does_not_split_codepoints(self):
+        """A 3-byte CJK char must not be sliced mid-byte and emit garbage."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        # Each "你" is 3 UTF-8 bytes.  Limit at 5 bytes — must keep one
+        # full char and drop the half-cut second char rather than emit ï¿½.
+        out = WeComAdapter._truncate_stream_content("你你", 5)
+        assert out == "你"
+        # Crucially, must be valid UTF-8 (no replacement chars from
+        # mid-byte slices).
+        assert "�" not in out
+
+
+@pytest.mark.skip(reason="Obsolete: send() no longer closes streams in new per-turn architecture")
+class TestSendClosesActiveStream:
+    """OBSOLETE: These tests verify old behavior where send() closed active streams.
+
+    In the new per-turn architecture (post Round 3 fixes), send() and streaming
+    are completely independent. Streams are managed by their creators
+    (GatewayStreamConsumer) via send_stream_frame(finalize=True, turn_id=...).
+
+    See test_wecom_per_turn.py for tests of the new per-turn model.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_finalizes_active_stream_opened_by_consumer(self):
+        """When the stream consumer opened a stream and then send() delivers
+        the response (e.g. fallback path), send() must close the stream."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._ws = MagicMock(closed=False)
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+
+        # Manually set active stream state (as the consumer would).
+        adapter._active_stream_id = "stream_test"
+        adapter._active_stream_req_id = "req-1"
+        adapter._active_stream_chat_id = "chat-1"
+
+        result = await adapter.send("chat-1", "Hello world!")
+
+        assert result.success is True
+        assert adapter._active_stream_id is None
+        finalize_calls = [
+            call for call in adapter._send_reply_request.await_args_list
+            if call.args[1].get("stream", {}).get("finish") is True
+        ]
+        assert len(finalize_calls) == 1
+        assert finalize_calls[0].args[1]["stream"]["content"] == "Hello world!"
+
+    @pytest.mark.asyncio
+    async def test_send_ignores_stream_for_different_chat(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-2"] = "req-2"
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+
+        adapter._active_stream_id = "stream_test"
+        adapter._active_stream_req_id = "req-1"
+        adapter._active_stream_chat_id = "chat-1"
+
+        result = await adapter.send("chat-2", "Hi")
+
+        assert result.success is True
+        assert adapter._active_stream_id is not None  # untouched
+
+    @pytest.mark.asyncio
+    async def test_send_falls_through_when_stream_expired(self):
+        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+
+        async def fake(req_id, body, **kwargs):
+            if body.get("stream", {}).get("finish"):
+                return {"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "expired"}
+            return {"errcode": 0, "headers": {"req_id": req_id}}
+
+        adapter._send_reply_request = AsyncMock(side_effect=fake)
+        adapter._active_stream_id = "stream_test"
+        adapter._active_stream_req_id = "req-1"
+        adapter._active_stream_chat_id = "chat-1"
+
+        result = await adapter.send("chat-1", "Final answer")
+
+        assert result.success is True
+        assert adapter._active_stream_id is None
+        assert "chat-1" in adapter._stream_expired_chats
+
