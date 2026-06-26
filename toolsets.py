@@ -218,7 +218,7 @@ TOOLSETS = {
     
     "session_search": {
         "description": "Search and recall past conversations with summarization",
-        "tools": ["session_search"],
+        "tools": ["session_search", "session_summary"],
         "includes": []
     },
 
