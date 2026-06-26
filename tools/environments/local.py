@@ -17,6 +17,9 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+# Windows subprocess creation flags — suppress console windows that flash
+# on every terminal invocation.  See: issues #49851, #42544.
+
 logger = logging.getLogger(__name__)
 
 
@@ -688,7 +691,7 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=_popen_cwd,
-            **_popen_kwargs,
+            **_popen_kwargs,  # creationflags=windows_hide_flags() on Windows — suppresses console flash (#49851, #42544)
         )
         if not _IS_WINDOWS:
             try:

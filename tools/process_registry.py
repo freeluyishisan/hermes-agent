@@ -751,7 +751,7 @@ class ProcessRegistry:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            **_popen_kwargs,
+            **_popen_kwargs,  # creationflags=windows_hide_flags() on Windows — suppresses console flash (#49851, #42544)
         )
 
         session.process = proc
