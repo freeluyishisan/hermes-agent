@@ -1,55 +1,68 @@
-# nix/packages.nix — Hermes Agent package built with uv2nix
-{ inputs, ... }:
+# nix/packages.nix — Hermes Agent package set in package-normal-form.
+#
+# Stable Nix (no flakes):
+#   let pkgs = import <nixpkgs> { }; in (import ./nix/packages.nix { inherit pkgs; }).default
+# Build inputs default to nix/inputs.nix (which reads flake.lock).
+#
+# The flake passes its own locked inputs explicitly, so existing flake users get
+# byte-identical derivations.
 {
-  perSystem =
-    { pkgs, lib, inputs', ... }:
-    let
-      hermesAgent = pkgs.callPackage ./hermes-agent.nix {
-        inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
-        # Only embed clean revs — dirtyRev doesn't represent any upstream
-        # commit, so comparing it would always claim "update available".
-        rev = inputs.self.rev or null;
-      };
-    in
-    {
-      packages = {
-        default = hermesAgent;
+  pkgs,
+  uv2nix ? null,
+  pyproject-nix ? null,
+  pyproject-build-systems ? null,
+  # Pre-built npm-lockfile-fix package (flake-only input). null is fine for the
+  # core Python packages; the node sub-packages (tui/web/desktop) need it.
+  npm-lockfile-fix ? null,
+  rev ? null,
+}:
+let
+  inherit (pkgs) lib;
+  stable = import ./inputs.nix { inherit lib; };
 
-        # Ships discord.py + python-telegram-bot + slack-sdk so a plain
-        # `nix profile install .#messaging` connects to Discord/Telegram/Slack
-        # on first run — lazy-install can't write to the read-only /nix/store.
-        messaging = hermesAgent.override {
-          extraDependencyGroups = [ "messaging" ];
-        };
+  hermesAgent = pkgs.callPackage ./hermes-agent.nix {
+    uv2nix = if uv2nix != null then uv2nix else stable.uv2nix;
+    pyproject-nix = if pyproject-nix != null then pyproject-nix else stable.pyproject-nix;
+    pyproject-build-systems =
+      if pyproject-build-systems != null then pyproject-build-systems else stable.pyproject-build-systems;
+    inherit npm-lockfile-fix rev;
+  };
+in
+{
+  default = hermesAgent;
 
-        # All platform-portable optional integrations pre-built.
-        # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
-        full = hermesAgent.override {
-          extraDependencyGroups = [
-            "anthropic"
-            "azure-identity"
-            "bedrock"
-            "daytona"
-            "dingtalk"
-            "edge-tts"
-            "exa"
-            "fal"
-            "feishu"
-            "firecrawl"
-            "hindsight"
-            "honcho"
-            "messaging"
-            "modal"
-            "parallel-web"
-            "tts-premium"
-            "voice"
-          ] ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
-        };
+  # Ships discord.py + python-telegram-bot + slack-sdk so a plain
+  # `nix profile install .#messaging` connects to Discord/Telegram/Slack
+  # on first run — lazy-install can't write to the read-only /nix/store.
+  messaging = hermesAgent.override {
+    extraDependencyGroups = [ "messaging" ];
+  };
 
-        tui = hermesAgent.hermesTui;
-        web = hermesAgent.hermesWeb;
-        desktop = hermesAgent.hermesDesktop;
-      };
-    };
+  # All platform-portable optional integrations pre-built.
+  # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
+  full = hermesAgent.override {
+    extraDependencyGroups = [
+      "anthropic"
+      "azure-identity"
+      "bedrock"
+      "daytona"
+      "dingtalk"
+      "edge-tts"
+      "exa"
+      "fal"
+      "feishu"
+      "firecrawl"
+      "hindsight"
+      "honcho"
+      "messaging"
+      "modal"
+      "parallel-web"
+      "tts-premium"
+      "voice"
+    ] ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
+  };
+
+  tui = hermesAgent.hermesTui;
+  web = hermesAgent.hermesWeb;
+  desktop = hermesAgent.hermesDesktop;
 }
