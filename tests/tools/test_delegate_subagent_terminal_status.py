@@ -136,3 +136,35 @@ def test_finalize_unknown_subagent_is_noop():
     # No registration: finalize must not raise and must not invent a record.
     delegate_tool._finalize_subagent("ghost", "completed")
     assert delegate_tool.list_active_subagents() == []
+
+
+def test_finalize_persists_output_tail_on_finished_record():
+    """The finished record carries the child's tool tail so a frontend that
+    missed the live ``subagent.tool`` stream can repopulate the tool list when
+    it reconciles from the ``delegation.status`` poll (issue #52318 follow-up).
+    """
+    _register("a")
+    tail = [
+        {"tool": "read_file", "preview": "ok", "is_error": False},
+        {"tool": "terminal", "preview": "done", "is_error": False},
+    ]
+    delegate_tool._finalize_subagent("a", "completed", output_tail=tail)
+
+    rec = delegate_tool.list_active_subagents()[0]
+    assert rec["subagent_id"] == "a"
+    assert rec["status"] == "completed"
+    assert rec["output_tail"] == tail
+    # Tool names must be recoverable from the snapshot, not just a count.
+    assert [t["tool"] for t in rec["output_tail"]] == ["read_file", "terminal"]
+
+
+def test_finalize_without_output_tail_omits_key():
+    """Back-compat: callers that don't pass a tail (early/exception exits)
+    must not introduce an empty ``output_tail`` key on the record.
+    """
+    _register("a")
+    delegate_tool._finalize_subagent("a", "failed")
+    rec = delegate_tool.list_active_subagents()[0]
+    assert rec["status"] == "failed"
+    assert "output_tail" not in rec
+

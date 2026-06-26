@@ -229,7 +229,11 @@ def _prune_finished_subagents(now: float) -> None:
         _recently_finished_subagents.popitem(last=False)
 
 
-def _finalize_subagent(subagent_id: str, status: str) -> None:
+def _finalize_subagent(
+    subagent_id: str,
+    status: str,
+    output_tail: Optional[List[Dict[str, Any]]] = None,
+) -> None:
     """Mark a subagent terminal and retain it briefly for the TUI overlay.
 
     The /agents overlay polls ``delegation.status`` on an interval; removing a
@@ -237,6 +241,14 @@ def _finalize_subagent(subagent_id: str, status: str) -> None:
     status and stays stuck on "running" (issue #52318).  We move the record
     into a short-lived "recently finished" store with its terminal status so at
     least one poll cycle surfaces it, then prune by age and count.
+
+    ``output_tail`` carries the child's last tool-call results (tool names +
+    previews).  The live ``subagent.tool`` stream that normally feeds the
+    overlay's tool list can be dropped if a new turn wipes the frontend entry
+    before ``subagent.complete`` arrives, so we persist the tail on the
+    finished record.  When the frontend reconciles a missed child from the
+    ``delegation.status`` poll it can repopulate the tool list from here
+    instead of showing an empty entry (issue #52318 follow-up).
     """
     if not status:
         status = "completed"
@@ -249,6 +261,8 @@ def _finalize_subagent(subagent_id: str, status: str) -> None:
             record.pop("agent", None)
             record["status"] = status
             record["finished_at"] = now
+            if output_tail:
+                record["output_tail"] = output_tail
             # Re-insert at the end to preserve finish-time ordering.
             _recently_finished_subagents.pop(subagent_id, None)
             _recently_finished_subagents[subagent_id] = record
@@ -2099,7 +2113,17 @@ def _run_single_child(
                 _result = locals().get("result")
                 if isinstance(_result, dict):
                     terminal_status = _result.get("status")
-            _finalize_subagent(_subagent_id, terminal_status or "failed")
+            # Persist the child's tool tail (names + previews) onto the finished
+            # record so a frontend that missed the live subagent.tool stream can
+            # repopulate the tool list when it reconciles from delegation.status
+            # (issue #52318 follow-up).  Only the normal completion path computes
+            # _output_tail; default to None on early/exception exits.
+            _final_tail = locals().get("_output_tail")
+            if not isinstance(_final_tail, list):
+                _final_tail = None
+            _finalize_subagent(
+                _subagent_id, terminal_status or "failed", output_tail=_final_tail
+            )
 
         if child_pool is not None and leased_cred_id is not None:
             try:
