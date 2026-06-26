@@ -235,7 +235,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     return sanitized
 
 
-def _find_bash() -> str:
+def _find_bash() -> str | None:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
         return (
