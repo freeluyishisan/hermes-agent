@@ -54,7 +54,7 @@ import {
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
-import { setSessionTodos } from '@/store/todos'
+import { clearActiveSessionTodos, setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
@@ -914,6 +914,7 @@ export function useMessageStream({
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
         clearClarifyRequest(undefined, sessionId)
+        clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)

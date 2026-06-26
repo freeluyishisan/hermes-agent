@@ -62,3 +62,11 @@ export function clearSessionTodos(sid: string) {
   const { [sid]: _drop, ...rest } = map
   $todosBySession.set(rest)
 }
+
+export function clearActiveSessionTodos(sid: string) {
+  const todos = $todosBySession.get()[sid]
+
+  if (todos && todoListActive(todos)) {
+    clearSessionTodos(sid)
+  }
+}

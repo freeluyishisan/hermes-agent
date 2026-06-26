@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TodoItem } from '@/lib/todos'
 
-import { $todosBySession, clearSessionTodos, setSessionTodos } from './todos'
+import { $todosBySession, clearActiveSessionTodos, clearSessionTodos, setSessionTodos } from './todos'
 
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
 
@@ -41,6 +41,22 @@ describe('setSessionTodos finished-list auto-clear', () => {
     // The next turn starts a fresh plan before the linger expires.
     setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'pending')])
     vi.advanceTimersByTime(60_000)
+
+    expect($todosBySession.get().s1).toHaveLength(2)
+  })
+
+  it('clears active todos when a turn finishes without a final todo update', () => {
+    setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'in_progress')])
+
+    clearActiveSessionTodos('s1')
+
+    expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('keeps finished todos on turn end so the final checkmarks can linger', () => {
+    setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'cancelled')])
+
+    clearActiveSessionTodos('s1')
 
     expect($todosBySession.get().s1).toHaveLength(2)
   })
