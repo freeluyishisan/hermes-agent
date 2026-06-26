@@ -512,6 +512,10 @@ export function useMessageStream({
 
         if (todos) {
           setSessionTodos(sessionId, todos)
+          // Sync mirrored/linked todo status changes to Kanban tasks
+          import('@/lib/kanban-sync').then(({ syncTodoToKanbanTasks }) => {
+            void syncTodoToKanbanTasks(sessionId, todos)
+          })
         }
       }
 
