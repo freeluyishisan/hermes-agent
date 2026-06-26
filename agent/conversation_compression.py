@@ -729,7 +729,9 @@ def compress_context(
     except Exception as _me_err:
         logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
-    # Warn on repeated compressions (quality degrades with each pass).
+    # Warn on repeated compactions without assuming the active context engine is
+    # lossy. LCM-style backends preserve originals durably, so avoid implying
+    # cumulative accuracy loss here (#53000).
     # Route through _emit_status (like the other compression warnings above)
     # so the warning reaches the TUI / Telegram / Discord via status_callback,
     # not just CLI stdout. _emit_status still _vprints for the CLI, and
@@ -738,8 +740,8 @@ def compress_context(
     _cc = agent.context_compressor.compression_count
     if _cc >= 2:
         _cc_msg = (
-            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-            f"accuracy may degrade. Consider /new to start fresh."
+            f"{agent.log_prefix}⚠️  Session compacted {_cc} times. "
+            f"Consider /new to start fresh."
         )
         agent._compression_warning = _cc_msg
         agent._emit_status(_cc_msg)
