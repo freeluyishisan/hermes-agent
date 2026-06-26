@@ -1663,7 +1663,9 @@ class AIAgent:
                     # instead of skipping by object id and leaving stale content.
                     prev = flushed_rows.get(msg_id)
                     if prev is not None and prev[1] != content:
-                        self._session_db.update_message_content(prev[0], content)
+                        self._session_db.update_message_content(
+                            prev[0], content, session_id=self.session_id
+                        )
                         flushed_rows[msg_id] = (prev[0], content)
                     continue
                 tool_calls_data = None

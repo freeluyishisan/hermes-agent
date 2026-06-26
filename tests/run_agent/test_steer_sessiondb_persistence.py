@@ -27,6 +27,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.prompt_builder import STEER_MARKER_OPEN
 from agent.tool_dispatch_helpers import make_tool_result_message
 from hermes_state import SessionDB
@@ -328,5 +330,47 @@ def test_pre_api_drain_persists_steer_no_stale_row():
             # End-of-turn persistence UPDATED the prior row in place: exactly one
             # steered tool row, no stale pre-steer row, no duplicate.
             _assert_single_steered_row(db, tool_msg)
+        finally:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# The fix leans on the AFTER UPDATE FTS triggers to re-index the steered
+# content. Pin the issue's stated search/audit/history impact: after the
+# post-flush UPDATE the steer text is discoverable through the public search
+# API, and it was NOT discoverable beforehand. On the old (skip-by-id) code the
+# pre-steer assertion stays true forever, so this fails without the fix.
+# ---------------------------------------------------------------------------
+def test_steer_update_reindexes_fts_search():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = SessionDB(db_path=Path(tmp) / "t.db")
+        try:
+            if not db._fts_enabled:
+                pytest.skip("FTS5 unavailable in this sqlite build")
+
+            agent = _make_agent(db)
+            tool_msg = {
+                "role": "tool",
+                "content": "tool result",
+                "tool_call_id": "c1",
+                "tool_name": "web_search",
+            }
+            messages = [tool_msg]
+
+            # Pre-steer flush: "smaller" lives only in the steer text, which is
+            # not in SQLite yet, so FTS cannot find it.
+            agent._flush_messages_to_session_db(messages)
+            assert db.search_messages("smaller", role_filter=["tool"]) == []
+
+            # /steer mutates the already-flushed dict; the next flush UPDATEs the
+            # durable row and the AFTER UPDATE trigger must re-index FTS.
+            agent.steer(STEER_TEXT)
+            agent._apply_pending_steer_to_tool_results(messages, 1)
+            agent._flush_messages_to_session_db(messages)
+
+            hits = db.search_messages("smaller", role_filter=["tool"])
+            assert len(hits) == 1, "steer text not searchable after UPDATE — FTS is stale"
+            assert hits[0]["session_id"] == SESSION_ID
+            assert "smaller" in hits[0]["snippet"]
         finally:
             db.close()
