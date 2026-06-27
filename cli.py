@@ -6582,6 +6582,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 hidden_tool_messages += 1
                 continue
 
+            if msg.get("_empty_recovery_synthetic"):
+                continue
+
             if role not in {"user", "assistant"}:
                 continue
 
