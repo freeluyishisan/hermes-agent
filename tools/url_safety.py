@@ -28,6 +28,7 @@ import logging
 import os
 import socket
 import asyncio
+import re
 from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 from utils import is_truthy_value
@@ -50,6 +51,13 @@ def normalize_url_for_request(url: str) -> str:
     raw = url.strip()
     if not raw:
         return raw
+
+    # Models sometimes emit otherwise valid URLs with whitespace between the
+    # scheme separator and authority (``https:// docs.example``). That position
+    # is never meaningful in HTTP(S) URLs, and repairing it before parsing keeps
+    # web tools from failing on a formatting artifact while leaving path/query
+    # whitespace to the normal percent-encoding path below.
+    raw = re.sub(r"://\s+", "://", raw)
 
     try:
         parsed = urlsplit(raw)

@@ -42,6 +42,24 @@ class TestNormalizeUrlForRequest:
             == "https://xn--mnich-kva.example/K%C3%B6ln"
         )
 
+    def test_repairs_space_between_scheme_and_authority(self):
+        assert (
+            normalize_url_for_request("https:// docs.openclaw.ai")
+            == "https://docs.openclaw.ai"
+        )
+
+    def test_repairs_tab_between_scheme_and_authority(self):
+        assert (
+            normalize_url_for_request("https://	docs.openclaw.ai/path")
+            == "https://docs.openclaw.ai/path"
+        )
+
+    def test_trims_but_preserves_path_and_query_space_semantics(self):
+        assert (
+            normalize_url_for_request(" https://example.com/a b?q=c d ")
+            == "https://example.com/a%20b?q=c%20d"
+        )
+
 
 class TestIsSafeUrl:
     def test_public_url_allowed(self):
