@@ -2377,8 +2377,44 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         except Exception as exc:
-            message = format_runtime_provider_error(exc)
-            raise RuntimeError(message) from exc
+            # Try fallback chain for rate-limit / credential-exhaustion errors
+            # before giving up — mirrors the AuthError handler above.  OAuth
+            # credential pools surface HTTP 429 when the pool is exhausted,
+            # which is not an AuthError but is equally recoverable via
+            # fallback.  See issue #46511.
+            _err_str = str(exc).lower()
+            _is_rate_or_exhaust = (
+                "429" in _err_str
+                or "rate" in _err_str
+                or "usage_limit" in _err_str
+                or "exhausted" in _err_str
+                or "quota" in _err_str
+            )
+            if _is_rate_or_exhaust:
+                logger.warning("Job '%s': primary failed (%s), trying fallback", job_id, exc)
+                fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
+                fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+                runtime = None
+                for entry in fb_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        fb_kwargs = {"requested": entry.get("provider")}
+                        if entry.get("base_url"):
+                            fb_kwargs["explicit_base_url"] = entry["base_url"]
+                        if entry.get("api_key"):
+                            fb_kwargs["explicit_api_key"] = entry["api_key"]
+                        runtime = resolve_runtime_provider(**fb_kwargs)
+                        logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                        break
+                    except Exception as fb_exc:
+                        logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
+                if runtime is None:
+                    message = format_runtime_provider_error(exc)
+                    raise RuntimeError(message) from exc
+            else:
+                message = format_runtime_provider_error(exc)
+                raise RuntimeError(message) from exc
 
         # Provider/model-drift fail-closed guard (#44585).
         #
