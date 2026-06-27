@@ -605,6 +605,33 @@ def recover_with_credential_pool(
     """
     pool = agent._credential_pool
     if pool is None:
+        provider_source = getattr(agent, "_provider_source", None)
+        if (
+            provider_source == "hermes-auth-store"
+            or provider_source == "pool"
+            or (isinstance(provider_source, str) and (
+                provider_source.startswith("manual:")
+                or provider_source.startswith("pool:")
+            ))
+        ):
+            from agent.credential_pool import load_pool
+            try:
+                loaded_pool = load_pool(agent.provider)
+            except Exception:
+                loaded_pool = None
+            if loaded_pool and loaded_pool.has_credentials():
+                current_api_key = getattr(agent, "api_key", None)
+                matching_entry = None
+                if current_api_key:
+                    for entry in loaded_pool.entries():
+                        if entry.runtime_api_key == current_api_key:
+                            matching_entry = entry
+                            break
+                if matching_entry:
+                    agent._credential_pool = loaded_pool
+                    pool = loaded_pool
+
+    if pool is None:
         return False, has_retried_429
 
     # Defensive guard: if a fallback provider is active and its provider name
@@ -657,7 +684,11 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -681,7 +712,11 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=rotate_status,
+                error_context=error_context,
+                api_key_hint=getattr(agent, "api_key", None),
+            )
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -705,7 +740,11 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -781,7 +820,11 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",
@@ -973,6 +1016,35 @@ def drop_thinking_only_and_merge_users(
 
 
 
+def _check_and_rotate_exhausted_pool_key(agent) -> None:
+    if not agent.provider:
+        return
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(agent.provider)
+        if pool and pool.has_credentials():
+            current_key = getattr(agent, "api_key", None)
+            if current_key:
+                current_entry = next((e for e in pool.entries() if e.runtime_api_key == current_key), None)
+                if current_entry:
+                    available = pool._available_entries(clear_expired=True, refresh=True)
+                    if not any(e.id == current_entry.id for e in available):
+                        new_entry = pool.select()
+                        if new_entry:
+                            logger.info(
+                                "restore_primary_runtime: current key %s is exhausted/dead in pool, rotating to %s",
+                                current_entry.label or current_entry.id,
+                                new_entry.label or new_entry.id
+                            )
+                            agent._swap_credential(new_entry)
+                            if hasattr(agent, "_primary_runtime") and isinstance(agent._primary_runtime, dict):
+                                agent._primary_runtime["api_key"] = new_entry.runtime_api_key
+                                if "client_kwargs" in agent._primary_runtime:
+                                    agent._primary_runtime["client_kwargs"]["api_key"] = new_entry.runtime_api_key
+    except Exception as pe:
+        logger.debug("Failed to check/rotate exhausted key in pool: %s", pe)
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
@@ -993,6 +1065,7 @@ def restore_primary_runtime(agent) -> bool:
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
         agent._fallback_index = 0
+        _check_and_rotate_exhausted_pool_key(agent)
         return False
 
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
@@ -1054,6 +1127,8 @@ def restore_primary_runtime(agent) -> bool:
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+
+        _check_and_rotate_exhausted_pool_key(agent)
 
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
