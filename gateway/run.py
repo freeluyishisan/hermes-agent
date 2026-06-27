@@ -1738,6 +1738,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _SecretValue,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -14256,6 +14257,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for key in ("provider", "api_key", "base_url", "api_mode"):
             val = override.get(key)
             if val is not None:
+                if isinstance(val, _SecretValue):
+                    val = val.get_secret()
                 runtime_kwargs[key] = val
         return model, runtime_kwargs
 
