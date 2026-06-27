@@ -118,3 +118,62 @@ def test_gateway_runtime_loaders_expand_env_var_templates(
     loader = getattr(gateway_run.GatewayRunner, loader_name)
 
     assert loader() == expected
+
+
+@pytest.mark.parametrize("key_field", ["key_env", "api_key_env"])
+def test_gateway_fallback_provider_resolves_key_env_aliases(monkeypatch, gateway_home, key_field):
+    """Gateway runtime fallback should match init-time fallback key resolution."""
+    _write_config(
+        gateway_home,
+        "fallback_providers:\n"
+        "  - provider: custom:test-fallback\n"
+        "    base_url: https://fallback.example.invalid/v1\n"
+        f"    {key_field}: GATEWAY_FALLBACK_TEST_KEY\n"
+        "    model: test-fallback-model\n",
+    )
+    monkeypatch.setenv("GATEWAY_FALLBACK_TEST_KEY", "env-fallback-key")
+
+    calls = []
+
+    def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None):
+        calls.append(
+            {
+                "requested": requested,
+                "explicit_base_url": explicit_base_url,
+                "explicit_api_key": explicit_api_key,
+            }
+        )
+        return {
+            "api_key": explicit_api_key,
+            "base_url": explicit_base_url,
+            "provider": requested,
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+
+    resolved = gateway_run._try_resolve_fallback_provider()
+
+    assert calls == [
+        {
+            "requested": "custom:test-fallback",
+            "explicit_base_url": "https://fallback.example.invalid/v1",
+            "explicit_api_key": "env-fallback-key",
+        }
+    ]
+    assert resolved == {
+        "api_key": "env-fallback-key",
+        "base_url": "https://fallback.example.invalid/v1",
+        "provider": "custom:test-fallback",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "model": "test-fallback-model",
+    }
