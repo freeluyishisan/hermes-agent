@@ -170,6 +170,20 @@ class TestPluginDiscovery:
         assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
         assert has_middleware("tool_request") is False
 
+    def test_execution_middleware_tolerates_manager_without_middleware_attr(self, monkeypatch):
+        """Execution middleware should fail open for manager-shaped test doubles.
+
+        The real PluginManager initializes ``_middleware``, but several paths
+        treat the singleton as an interface and substitute lightweight manager
+        objects. Request middleware already handles that shape through
+        ``has_middleware``; execution middleware needs the same fallback.
+        """
+        manager = types.SimpleNamespace()
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        args = {"command": "printf ok"}
+        assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
+
     def test_request_middleware_changed_tracks_trace_not_deep_equality(self, monkeypatch):
         def same_payload_middleware(**kwargs):
             return {"args": kwargs["args"], "source": "same-payload"}
