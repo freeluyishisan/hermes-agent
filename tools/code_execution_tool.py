@@ -226,7 +226,7 @@ _TOOL_STUBS = {
     "read_file": (
         "read_file",
         "path: str, offset: int = 1, limit: int = 500",
-        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
+        '"""Read a file (1-indexed lines). Returns file content as a formatted string (LINE_NUM|CONTENT...)."""',
         '{"path": path, "offset": offset, "limit": limit}',
     ),
     "write_file": (
@@ -1720,7 +1720,7 @@ _TOOL_DOC_LINES = [
      "  web_extract(urls: list[str]) -> dict\n"
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
     ("read_file",
-     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
+     "  read_file(path: str, offset: int = 1, limit: int = 500) -> str\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
     ("write_file",
      "  write_file(path: str, content: str) -> dict\n"
