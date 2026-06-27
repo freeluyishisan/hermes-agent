@@ -22,7 +22,7 @@ import contextlib
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -739,6 +739,31 @@ def _run_review_in_thread(
                     "{tool_name}. Only memory/skill tools are allowed."
                 ),
             )
+
+            # Per-skill protection: read the config list and set the
+            # threadlocal so skill_manage refuses writes to protected
+            # skills during the review fork. Foreground turns never set
+            # this threadlocal, so normal conversation edits are unaffected.
+            _protected_names: Set[str] = set()
+            try:
+                from hermes_cli.config import load_config, cfg_get
+                _cfg = load_config()
+                _raw_protected = cfg_get(_cfg, "skills", "review_protected", default=[])
+                if isinstance(_raw_protected, str):
+                    import json as _json
+                    _raw_protected = _json.loads(_raw_protected)
+                if isinstance(_raw_protected, list):
+                    _protected_names = {
+                        str(n).strip() for n in _raw_protected if str(n).strip()
+                    }
+            except Exception:
+                pass
+
+            from tools.skill_manager_tool import (
+                set_review_protected_skills,
+                clear_review_protected_skills,
+            )
+            set_review_protected_skills(_protected_names)
             try:
                 # Routed to a different model -> replay a digest (cache is cold
                 # on that model anyway, so minimise cold-written tokens). Same
@@ -757,6 +782,7 @@ def _run_review_in_thread(
                     conversation_history=_review_history,
                 )
             finally:
+                clear_review_protected_skills()
                 clear_thread_tool_whitelist()
 
             # Snapshot review actions before teardown. close() is allowed to
