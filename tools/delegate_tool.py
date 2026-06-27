@@ -3558,7 +3558,15 @@ DELEGATE_TASK_SCHEMA = {
                     "'profile'; ignored otherwise. Applies to every batch task "
                     "unless the task sets its own 'profile_memory'. The "
                     "operator default lives in "
-                    "delegation.profile_memory_writeback (read-only)."
+                    "delegation.profile_memory_writeback (read-only). "
+                    "Read-mode contract: 'read' enforces read-only by OMITTING "
+                    "the memory write tool from the subagent entirely (rather "
+                    "than offering it and refusing at call time) and by "
+                    "initialising the memory provider in subagent context so its "
+                    "write paths are skipped; recall/retrieval stays fully "
+                    "available. So a read-mode subagent has no way to mutate the "
+                    "profile's memory, and 'write' is the only mode that surfaces "
+                    "the write tool."
                 ),
             },
             "toolsets": {
