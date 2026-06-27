@@ -2503,7 +2503,7 @@ def _is_payment_error(exc: Exception) -> bool:
     if status in {402, 403, 404, 429, None}:
         if any(kw in err_lower for kw in (
             "credits", "insufficient funds",
-            "can only afford", "billing",
+            "billing",
             "payment required",
             "out of funds", "run out of funds",
             "balance_depleted", "no usable credits",
