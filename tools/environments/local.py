@@ -270,8 +270,6 @@ def _find_bash() -> str:
                 return candidate
 
     found = shutil.which("bash")
-    if found:
-        return found
 
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
@@ -280,6 +278,9 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    if found:
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
