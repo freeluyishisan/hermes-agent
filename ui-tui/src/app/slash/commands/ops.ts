@@ -372,7 +372,10 @@ export const opsCommands: SlashCommand[] = [
         }
 
         ctx.gateway
-          .rpc<SpawnTreeLoadResponse>('spawn_tree.load', { path })
+          .rpc<SpawnTreeLoadResponse>('spawn_tree.load', {
+            path,
+            session_id: ctx.sid ?? 'default'
+          })
           .then(
             ctx.guarded<SpawnTreeLoadResponse>(r => {
               if (!r.subagents?.length) {
