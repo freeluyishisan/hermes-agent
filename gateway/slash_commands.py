@@ -3930,8 +3930,14 @@ class GatewaySlashCommandsMixin:
         from hermes_cli.debug import (
             _capture_dump, collect_debug_report,
             upload_to_pastebin, _schedule_auto_delete,
-            _GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
+            _GATEWAY_PRIVACY_NOTICE, _GATEWAY_DEBUG_CONFIRM_TEXT,
+            _best_effort_sweep_expired_pastes,
         )
+
+        args = event.get_command_args().strip().lower()
+        action = args.split()[0] if args else ""
+        if action not in {"confirm", "yes", "upload"}:
+            return "\n\n".join([_GATEWAY_PRIVACY_NOTICE, _GATEWAY_DEBUG_CONFIRM_TEXT])
 
         loop = asyncio.get_running_loop()
 

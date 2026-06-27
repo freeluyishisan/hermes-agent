@@ -30,10 +30,23 @@ def _make_runner():
 
 
 class TestHandleDebugCommand:
+
+    @pytest.mark.asyncio
+    async def test_debug_requires_confirmation_before_upload(self):
+        runner = _make_runner()
+        event = _make_event()
+
+        with patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
+            result = await runner._handle_debug_command(event)
+
+        mock_upload.assert_not_called()
+        assert "Privacy notice" in result
+        assert "/debug confirm" in result
+
     @pytest.mark.asyncio
     async def test_debug_sweeps_expired_pastes_before_upload(self):
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event("/debug confirm")
 
         with patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
              patch("hermes_cli.debug._capture_dump", return_value="dump"), \
@@ -48,7 +61,7 @@ class TestHandleDebugCommand:
     @pytest.mark.asyncio
     async def test_debug_survives_sweep_failure(self):
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event("/debug confirm")
 
         with patch("hermes_cli.debug._sweep_expired_pastes", side_effect=RuntimeError("offline")), \
              patch("hermes_cli.debug._capture_dump", return_value="dump"), \

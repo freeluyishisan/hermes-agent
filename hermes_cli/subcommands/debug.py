@@ -64,6 +64,16 @@ Examples:
             "into the public paste service."
         ),
     )
+    share_parser.add_argument(
+        "--yes",
+        "--confirm-upload",
+        dest="yes",
+        action="store_true",
+        help=(
+            "Confirm that debug logs may be uploaded to a public paste service. "
+            "Required for non-interactive use."
+        ),
+    )
     delete_parser = debug_sub.add_parser(
         "delete",
         help="Delete a paste uploaded by 'hermes debug share'",

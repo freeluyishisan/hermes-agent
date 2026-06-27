@@ -892,7 +892,10 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+        r = self.client.post(
+            "/api/ops/debug-share",
+            json={"redact": True, "confirm_upload": True},
+        )
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True
@@ -911,7 +914,10 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": False})
+        r = self.client.post(
+            "/api/ops/debug-share",
+            json={"redact": False, "confirm_upload": True},
+        )
         assert r.status_code == 200
         assert r.json()["redacted"] is False
 
@@ -926,7 +932,7 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
         # No JSON body at all — should default redact=True.
-        r = self.client.post("/api/ops/debug-share")
+        r = self.client.post("/api/ops/debug-share", json={"confirm_upload": True})
         assert r.status_code == 200
         assert r.json()["redacted"] is True
 
@@ -942,8 +948,31 @@ class TestDebugShareEndpoint:
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
         monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
-        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+        r = self.client.post(
+            "/api/ops/debug-share",
+            json={"redact": True, "confirm_upload": True},
+        )
         assert r.status_code == 502
+
+
+    def test_requires_upload_confirmation_before_paste(self, monkeypatch):
+        import hermes_cli.debug as dbg
+
+        called = {"upload": False}
+
+        def _upload(content, expiry_days=7):
+            called["upload"] = True
+            return "https://paste.rs/x"
+
+        monkeypatch.setattr(dbg, "upload_to_pastebin", _upload)
+
+        r = self.client.post("/api/ops/debug-share", json={"redact": True})
+
+        assert r.status_code == 409
+        body = r.json()["detail"]
+        assert body["error"] == "debug_share_confirmation_required"
+        assert "public paste service" in body["privacy_notice"]
+        assert called["upload"] is False
 
     def test_requires_session_token(self):
         # Drop the token header and confirm the global auth gate rejects it.

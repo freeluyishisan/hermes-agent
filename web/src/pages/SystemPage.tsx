@@ -363,10 +363,18 @@ export default function SystemPage() {
   );
 
   const runDebugShare = useCallback(async () => {
+    const confirmed = window.confirm(
+      "Upload a debug report to a public paste service?\n\n" +
+        "It may include conversation fragments, tool output, local paths, chat IDs, and system fingerprints. Use the local CLI path if you need to inspect it first.",
+    );
+    if (!confirmed) return;
     setSharing(true);
     setShareResult(null);
     try {
-      const res = await api.runDebugShare({ redact: shareRedact });
+      const res = await api.runDebugShare({
+        redact: shareRedact,
+        confirmUpload: true,
+      });
       setShareResult(res);
       const n = Object.keys(res.urls).length;
       showToast(

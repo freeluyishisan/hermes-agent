@@ -495,6 +495,67 @@ class TestCollectDebugReport:
 class TestRunDebugShare:
     """Test the run_debug_share CLI handler."""
 
+    def test_share_requires_confirmation_before_upload(self, hermes_home, capsys, monkeypatch):
+        """Non-interactive debug share fails closed before any paste upload."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.yes = False
+        args.confirm_upload = False
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        with patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
+            with pytest.raises(SystemExit) as exc_info:
+                run_debug_share(args)
+
+        assert exc_info.value.code == 1
+        mock_upload.assert_not_called()
+        captured = capsys.readouterr()
+        assert "public paste service" in captured.out
+        assert "require explicit confirmation" in captured.err
+
+    def test_share_prompt_requires_upload_word(self, hermes_home, capsys, monkeypatch):
+        """TTY prompt must receive the exact confirmation word before uploading."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.yes = False
+        args.confirm_upload = False
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "nope")
+
+        with patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
+            with pytest.raises(SystemExit) as exc_info:
+                run_debug_share(args)
+
+        assert exc_info.value.code == 1
+        mock_upload.assert_not_called()
+        assert "Upload cancelled" in capsys.readouterr().err
+
+    def test_share_yes_bypasses_prompt(self, hermes_home, capsys, monkeypatch):
+        """--yes is the explicit non-interactive confirmation path."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+        args.yes = True
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin", return_value="https://paste.rs/ok"):
+            run_debug_share(args)
+
+        assert "https://paste.rs/ok" in capsys.readouterr().out
+
+
     def test_share_sweeps_expired_pastes(self, hermes_home, capsys):
         """Slash-command path should sweep old pending deletes before uploading."""
         from hermes_cli.debug import run_debug_share

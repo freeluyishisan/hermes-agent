@@ -2377,6 +2377,9 @@ async def run_config_migrate():
 
 
 class DebugShareRequest(BaseModel):
+    # Uploads leave the machine and go to a public paste service. Dashboard
+    # callers must explicitly opt in so accidental button/API hits fail closed.
+    confirm_upload: bool = False
     # Redaction is ON by default — force-mode scrubs credential-shaped tokens
     # out of log content before it leaves the machine. The toggle exists so an
     # operator who knows the logs are clean can opt out for fuller fidelity.
@@ -2396,9 +2399,18 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
     dashboard renders those as real, copyable links instead of scraping a log
     tail. Pastes auto-delete after 6 hours (handled inside the share core).
     """
-    from hermes_cli.debug import build_debug_share
+    from hermes_cli.debug import _PRIVACY_NOTICE, build_debug_share
 
     req = body or DebugShareRequest()
+    if not bool(req.confirm_upload):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "debug_share_confirmation_required",
+                "message": "Debug share uploads may expose private data. Re-submit with confirm_upload=true after reviewing the privacy notice.",
+                "privacy_notice": _PRIVACY_NOTICE,
+            },
+        )
     try:
         result = await asyncio.to_thread(
             build_debug_share,

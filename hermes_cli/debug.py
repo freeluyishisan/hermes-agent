@@ -197,7 +197,14 @@ _PRIVACY_NOTICE = """\
     likely contains conversation content, tool outputs, and file paths)
 
 Pastes auto-delete after 6 hours.
+
+Type UPLOAD to confirm, or rerun with --local to inspect without uploading.
 """
+
+_GATEWAY_DEBUG_CONFIRM_TEXT = (
+    "To upload the debug report, run `/debug confirm`. "
+    "Run `hermes debug share --local` on the host to inspect locally without uploading."
+)
 
 _GATEWAY_PRIVACY_NOTICE = (
     "⚠️ **Privacy notice:** This uploads system info + recent log tails "
@@ -704,6 +711,29 @@ def build_debug_share(
     )
 
 
+def _debug_upload_confirmed(args) -> bool:
+    """Return True only after explicit user confirmation for paste uploads."""
+    if getattr(args, "yes", False) or getattr(args, "confirm_upload", False):
+        return True
+    if not sys.stdin.isatty():
+        print(
+            "\nUpload cancelled: debug share uploads require explicit confirmation.\n"
+            "Run `hermes debug share --local` to inspect locally, or add `--yes` "
+            "after reviewing the privacy notice.",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        response = input("Type UPLOAD to send this report to a public paste service: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nUpload cancelled.", file=sys.stderr)
+        return False
+    if response.strip() == "UPLOAD":
+        return True
+    print("\nUpload cancelled.", file=sys.stderr)
+    return False
+
+
 def run_debug_share(args):
     """Collect debug report + full logs, upload each, print URLs."""
     log_lines = getattr(args, "lines", 200)
@@ -760,6 +790,8 @@ def run_debug_share(args):
         return
 
     print(_PRIVACY_NOTICE)
+    if not _debug_upload_confirmed(args):
+        sys.exit(1)
     print("Collecting debug report...")
     print("Uploading...")
 
