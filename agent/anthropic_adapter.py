@@ -835,6 +835,8 @@ def build_anthropic_bedrock_client(region: str):
     serves them with 1M natively.
 
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
+    When ``bedrock.profile`` is set in config.yaml, passes ``aws_profile``
+    so the SDK uses that named profile instead of the default chain.
     """
     _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
@@ -849,11 +851,22 @@ def build_anthropic_bedrock_client(region: str):
         )
     from httpx import Timeout
 
-    return _anthropic_sdk.AnthropicBedrock(
+    kwargs = dict(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
         default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
+
+    # Respect bedrock.profile from config.yaml (#43143)
+    try:
+        from agent.bedrock_adapter import _resolve_bedrock_profile
+        profile = _resolve_bedrock_profile()
+        if profile:
+            kwargs["aws_profile"] = profile
+    except Exception:
+        pass
+
+    return _anthropic_sdk.AnthropicBedrock(**kwargs)
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
