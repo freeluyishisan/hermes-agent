@@ -75,6 +75,7 @@ import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '.
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
+import { DockBanner } from './dock-banner'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import {
   type ComposerInsertMode,
@@ -118,6 +119,7 @@ import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+import { WindowPreviews } from './window-preview'
 
 const COMPOSER_STACK_BREAKPOINT_PX = 320
 
@@ -192,6 +194,7 @@ export function ChatBar({
   onPickFiles,
   onPickFolders,
   onPickImages,
+  onPickWindow,
   onRemoveAttachment,
   onSteer,
   onSubmit,
@@ -2032,6 +2035,7 @@ export function ChatBar({
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}
       onPickImages={onPickImages}
+      onPickWindow={onPickWindow}
       state={state}
     />
   )
@@ -2315,7 +2319,9 @@ export function ChatBar({
                     </div>
                   </div>
                 )}
+                <DockBanner />
                 {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                <WindowPreviews attachments={attachments} onRemove={onRemoveAttachment} />
                 <div
                   className={cn(
                     'grid w-full',
