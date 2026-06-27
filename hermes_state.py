@@ -2472,6 +2472,7 @@ class SessionDB:
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
+                    (SELECT COUNT(*) FROM messages m3 WHERE m3.session_id = s.id) AS _computed_message_count,
                     COALESCE(
                         (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                         s.started_at
@@ -2496,6 +2497,7 @@ class SessionDB:
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
+                    (SELECT COUNT(*) FROM messages m3 WHERE m3.session_id = s.id) AS _computed_message_count,
                     COALESCE(
                         (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                         s.started_at
@@ -2514,6 +2516,12 @@ class SessionDB:
             s = dict(row)
             # Build the preview from the raw substring
             raw = s.pop("_preview_raw", "").strip()
+            # Override the denormalized message_count with the actual count
+            # from the messages table — the sessions.message_count column can
+            # lag behind (e.g. after a partial write, crash, or race).
+            computed = s.pop("_computed_message_count", None)
+            if computed is not None:
+                s["message_count"] = computed
             if raw:
                 text = raw[:60]
                 s["preview"] = text + ("..." if len(raw) > 60 else "")
@@ -2639,6 +2647,7 @@ class SessionDB:
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
+                (SELECT COUNT(*) FROM messages m3 WHERE m3.session_id = s.id) AS _computed_message_count,
                 COALESCE(
                     (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                     s.started_at
@@ -2653,6 +2662,9 @@ class SessionDB:
             return None
         s = dict(row)
         raw = s.pop("_preview_raw", "").strip()
+        computed = s.pop("_computed_message_count", None)
+        if computed is not None:
+            s["message_count"] = computed
         if raw:
             text = raw[:60]
             s["preview"] = text + ("..." if len(raw) > 60 else "")
