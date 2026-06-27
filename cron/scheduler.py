@@ -2085,6 +2085,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # at module top keeps no_agent ticks from paying for AIAgent / SessionDB
     # construction costs.
     # ---------------------------------------------------------------
+    # Ensure the plugin system is initialized before any agent code runs
+    # middleware through the PluginManager. Without this, cron jobs that
+    # are the first to touch middleware in a fresh scheduler process can
+    # fail with "'PluginManager' object has no attribute '_middleware'".
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+
     from run_agent import AIAgent
 
     # Initialize SQLite session store so cron job messages are persisted
