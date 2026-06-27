@@ -6495,9 +6495,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._session_db,
                 source="cli",
                 current_session_id=self.session_id,
-                include_all_sources=False,
-                include_unnamed=True,
-                limit=limit,
+                include_all_sources=True,
+                include_unnamed=True,                limit=limit,
                 exclude_sources=["tool"],
             )
         except Exception:
