@@ -6733,7 +6733,15 @@ class TestPersistUserMessageOverride:
 
         agent._persist_session(messages, [])
 
-        assert messages[0]["content"] == "Hello there"
+        # The original messages list must NOT be mutated — the persist
+        # override operates on a shallow copy so the live list keeps the
+        # original content for the API call (#48677).
+        assert (
+            messages[0]["content"]
+            == "[Voice input — respond concisely and conversationally, "
+            "2-3 sentences max. No code blocks or markdown.] Hello there"
+        )
+        # But the DB write must get the override.
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 
