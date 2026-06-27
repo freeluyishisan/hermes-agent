@@ -29,6 +29,9 @@ import fillerBgUrl from "@nous-research/ui/assets/filler-bg0.webp";
  *         tooltips, and dropUp dropdowns all sit at z-[100]) so portaled
  *         elements get inverted along with the rest of the page instead
  *         of painting with pre-inversion colors on top of the lens.
+ *         App shell chrome (sidebar, mobile header) is pinned at z-[210]
+ *         in App.tsx because WebKit often fails to deliver clicks through
+ *         this layer even with pointer-events:none.
  *   z-201 noise grain (SVG, ~55% opacity × `--noise-opacity-mul`,
  *         color-dodge) — gated on GPU tier. Sits above the inversion
  *         layer by design so the grain is not flipped.
