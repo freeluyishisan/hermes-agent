@@ -1005,6 +1005,16 @@ class SessionDB:
                 self._warn_fts5_unavailable(exc)
             return False
 
+    def _check_open(self) -> None:
+        """Guard every public operation against use after close().
+
+        Raises RuntimeError with a clear message instead of the confusing
+        ``AttributeError: 'NoneType' object has no attribute 'execute'`` that
+        SQLite produces when ``self._conn`` has been nulled out.
+        """
+        if self._conn is None:
+            raise RuntimeError("SessionDB connection is closed")
+
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -1020,6 +1030,7 @@ class SessionDB:
 
         Returns whatever *fn* returns.
         """
+        self._check_open()
         last_err: Optional[Exception] = None
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
@@ -1075,6 +1086,7 @@ class SessionDB:
         writes) and already runs under ``self._lock``, so the
         additional hold time is negligible.
         """
+        self._check_open()
         try:
             with self._lock:
                 result = self._conn.execute(
@@ -1095,13 +1107,14 @@ class SessionDB:
         help shrink the WAL file.
         """
         with self._lock:
-            if self._conn:
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
-                self._conn.close()
-                self._conn = None
+            if self._conn is None:
+                return
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            self._conn.close()
+            self._conn = None
 
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
@@ -1659,6 +1672,7 @@ class SessionDB:
 
         Diagnostic helper — not used by the locking protocol itself.
         """
+        self._check_open()
         if not session_id:
             return None
         now = time.time()
@@ -1924,6 +1938,7 @@ class SessionDB:
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
+        self._check_open()
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
@@ -1938,6 +1953,7 @@ class SessionDB:
         prefix and returns the single matching session ID if the prefix is
         unambiguous. Returns None for no matches or ambiguous prefixes.
         """
+        self._check_open()
         exact = self.get_session(session_id_or_prefix)
         if exact:
             return exact["id"]
@@ -2093,6 +2109,7 @@ class SessionDB:
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
+        self._check_open()
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT title FROM sessions WHERE id = ?", (session_id,)
@@ -2152,6 +2169,7 @@ class SessionDB:
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
+        self._check_open()
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT * FROM sessions WHERE title = ?", (title,)
@@ -2167,6 +2185,7 @@ class SessionDB:
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
         """
+        self._check_open()
         # First try exact match
         exact = self.get_session_by_title(title)
 
@@ -2194,6 +2213,7 @@ class SessionDB:
         Strips any existing " #N" suffix to find the base name, then finds
         the highest existing number and increments.
         """
+        self._check_open()
         # Strip existing #N suffix to find the true base
         match = re.match(r'^(.*?) #(\d+)$', base_title)
         if match:
@@ -2244,6 +2264,7 @@ class SessionDB:
         Returns the latest continuation tip, or the input id when no
         continuation exists.
         """
+        self._check_open()
         current = session_id
         seen = {current} if current else set()
         # Bound the walk defensively — compression chains this deep are
@@ -3234,6 +3255,7 @@ class SessionDB:
         latest; that matches the single-chain shape that compression creates.
         A depth cap (32) guards against accidental loops in malformed data.
         """
+        self._check_open()
         if not session_id:
             return session_id
 
@@ -3391,6 +3413,7 @@ class SessionDB:
         return messages
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        self._check_open()
         if not session_id:
             return [session_id]
 
@@ -4156,6 +4179,7 @@ class SessionDB:
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
+        self._check_open()
         with self._lock:
             if session_id:
                 cursor = self._conn.execute(
@@ -4428,6 +4452,7 @@ class SessionDB:
         to clean up, and pre-populate the confirm dialog with the actual
         count.
         """
+        self._check_open()
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM sessions "
@@ -4563,6 +4588,7 @@ class SessionDB:
 
     def get_meta(self, key: str) -> Optional[str]:
         """Read a value from the state_meta key/value store."""
+        self._check_open()
         with self._lock:
             row = self._conn.execute(
                 "SELECT value FROM state_meta WHERE key = ?", (key,)
@@ -4765,6 +4791,7 @@ class SessionDB:
 
     def is_telegram_topic_mode_enabled(self, *, chat_id: str, user_id: str) -> bool:
         """Return whether Telegram DM topic mode is enabled for this chat/user."""
+        self._check_open()
         with self._lock:
             try:
                 row = self._conn.execute(
@@ -4995,6 +5022,7 @@ class SessionDB:
         ``/topic`` in this profile), the session is by definition unbound
         and we return False.
         """
+        self._check_open()
         with self._lock:
             try:
                 row = self._conn.execute(
@@ -5094,6 +5122,7 @@ class SessionDB:
 
     def _fts_table_exists(self, name: str) -> bool:
         """True if an FTS5 virtual table is queryable in this DB."""
+        self._check_open()
         try:
             self._conn.execute(f"SELECT 1 FROM {name} LIMIT 0")
             return True
@@ -5121,6 +5150,7 @@ class SessionDB:
 
         Returns the number of FTS indexes that were optimized.
         """
+        self._check_open()
         optimized = 0
         with self._lock:
             for tbl in self._FTS_TABLES:
@@ -5160,6 +5190,7 @@ class SessionDB:
         Returns the number of FTS indexes that were optimized (0 if the
         merge step failed or no FTS tables exist).
         """
+        self._check_open()
         # Merge FTS5 segments before VACUUM so the freed pages are returned
         # to the OS in the same pass. optimize_fts() manages its own lock.
         optimized = 0
@@ -5287,6 +5318,7 @@ class SessionDB:
         Returns ``{"state", "platform", "error"}`` or None if the session has
         no handoff record.
         """
+        self._check_open()
         try:
             cur = self._conn.execute(
                 "SELECT handoff_state, handoff_platform, handoff_error "
@@ -5309,6 +5341,7 @@ class SessionDB:
 
         Used by the gateway's handoff watcher.
         """
+        self._check_open()
         try:
             cur = self._conn.execute(
                 "SELECT * FROM sessions "
