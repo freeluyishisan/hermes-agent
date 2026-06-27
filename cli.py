@@ -13530,11 +13530,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         from prompt_toolkit.completion import ThreadedCompleter
 
 
-        _completer = SlashCommandCompleter(
+        _base_completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
             skill_bundles_provider=lambda: get_skill_bundles(),
         )
+        _completer = ThreadedCompleter(_base_completer)
+        _base_completer.refresh_project_files_async()
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
@@ -13553,7 +13555,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             complete_while_typing=True,
             auto_suggest=SlashCommandAutoSuggest(
                 history_suggest=AutoSuggestFromHistory(),
-                completer=_completer,
+                completer=_base_completer,
             ),
         )
         # Keep prompt_toolkit on its simple tempfile path. Setting
