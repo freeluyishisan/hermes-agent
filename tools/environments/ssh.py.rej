@@ -1,0 +1,10 @@
+diff a/tools/environments/ssh.py b/tools/environments/ssh.py	(rejected hunks)
+@@ -104,6 +162,8 @@ class SSHEnvironment(BaseEnvironment):
+             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+             if result.returncode != 0:
+                 error_msg = result.stderr.strip() or result.stdout.strip()
++                if getattr(self, "_key_sidecar_warning", None):
++                    error_msg = f"{error_msg}\n{self._key_sidecar_warning}"
+                 raise RuntimeError(f"SSH connection failed: {error_msg}")
+         except subprocess.TimeoutExpired:
+             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
