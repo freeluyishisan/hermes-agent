@@ -1867,7 +1867,15 @@ class MCPServerTask:
                 write_stream,
             ):
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
-                new_pids = _snapshot_child_pids() - pids_before
+                # Filter out non-MCP children that race into the snapshot window:
+                # slash_worker and LSP servers (jdtls/pyright/yaml-ls) are spawned
+                # directly by the gateway without start_new_session, so their pgid
+                # equals the TUI parent PID. If they leak into _stdio_pgids, the
+                # shutdown sweep's killpg() kills the TUI parent itself.
+                # See agent/lsp/client.py for the complementary start_new_session fix.
+                new_pids = _filter_mcp_children(
+                    _snapshot_child_pids() - pids_before
+                )
                 if new_pids:
                     # Capture pgid while the child is alive — once it exits we
                     # can no longer call ``os.getpgid`` on it, and the cleanup
@@ -3003,6 +3011,52 @@ def _snapshot_child_pids() -> set:
         pass
 
     return set()
+
+
+# Non-MCP gateway children that can race into the _snapshot_child_pids() delta
+# during stdio MCP server spawn. These are spawned directly by the gateway
+# (not via the MCP SDK's start_new_session=True path), so their pgid equals the
+# TUI parent PID. If they leak into _stdio_pgids, shutdown_mcp_servers() will
+# killpg(tui_parent_pid) and suicide the TUI. Matched on the start of the
+# cmdline to stay robust against argument drift.
+_NON_MCP_CHILD_CMDLINE_PREFIXES: tuple[str, ...] = (
+    "tui_gateway.slash_worker",
+    "tui_gateway.entry",
+    "-dorg.eclipse.equinox.launcher",  # jdtls (legacy arg style)
+    "eclipse.jdt.ls",
+    "org.eclipse.equinox.launcher_",
+)
+
+
+def _filter_mcp_children(pids: set) -> set:
+    """Remove non-MCP children from a PID snapshot delta.
+
+    _snapshot_child_pids() returns *all* direct children of the gateway. When
+    a stdio MCP server spawns concurrently with a slash_worker or LSP server
+    spawn, the delta ``_snapshot_child_pids() - pids_before`` can include
+    PIDs that are NOT the MCP server. Tracking those PIDs in _stdio_pgids is
+    catastrophic: their pgid is the TUI parent's PID (they lack
+    start_new_session), so the shutdown sweep's killpg() kills the TUI itself.
+    """
+    if not pids:
+        return pids
+    try:
+        import psutil
+    except ImportError:
+        # psutil unavailable — keep all PIDs (preserves prior behavior).
+        return pids
+    filtered: set = set()
+    for pid in pids:
+        try:
+            cmdline = " ".join(psutil.Process(pid).cmdline())
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            # Process raced away or is a zombie — skip it; it cannot be the
+            # MCP server we just spawned and is not safe to track.
+            continue
+        if any(cmdline.startswith(p) for p in _NON_MCP_CHILD_CMDLINE_PREFIXES):
+            continue
+        filtered.add(pid)
+    return filtered
 
 
 def _mcp_loop_exception_handler(loop, context):
