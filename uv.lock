@@ -1579,6 +1579,9 @@ slack = [
 sms = [
     { name = "aiohttp" },
 ]
+supermemory = [
+    { name = "supermemory" },
+]
 teams = [
     { name = "aiohttp" },
     { name = "microsoft-teams-apps" },
@@ -1736,6 +1739,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'dev'", specifier = "==1.0.1" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = "==1.0.1" },
     { name = "starlette", marker = "extra == 'web'", specifier = "==1.0.1" },
+    { name = "supermemory", marker = "extra == 'supermemory'", specifier = "==3.46.0" },
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
@@ -1745,7 +1749,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "supermemory", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -3803,6 +3807,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/08/a3/84e821cc54b4ab50ae6dbc6ac3800a651b65ec35f045cc73785380654057/starlette-1.0.1.tar.gz", hash = "sha256:512399c5f1de7fac99c88572212ded9ddeddef2fb32afa82d724000e88b38f4f", size = 2659596, upload-time = "2026-05-21T21:58:58.433Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/e1/b2df4bc09a1e51ff664c1e17018a4274b42e5e9352e4a478ea540512dc88/starlette-1.0.1-py3-none-any.whl", hash = "sha256:7c0e69b2ee1c848bd54669d908500117a3ee13de603a21427e5c6fc1adf98dcd", size = 72802, upload-time = "2026-05-21T21:58:56.551Z" },
+]
+
+[[package]]
+name = "supermemory"
+version = "3.46.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/09/73aa7df138823250ad529ceed4f1f3f8197a51dcfa6134ced556d91e03ea/supermemory-3.46.0.tar.gz", hash = "sha256:d1257ca92571840e535ed955d2b4c6fab97df6d13f9fd6e74a9fe19fe923ea49", size = 173431, upload-time = "2026-06-08T19:29:36.036Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/07/74e517149275ece59607f74eaaa88e943dd579bde4c03c857b7eda973cfc/supermemory-3.46.0-py3-none-any.whl", hash = "sha256:2bd474c1dcd8b7d51aaf7303a9794a66bf18cc3dcd6e87fbdccc5b89c97734b1", size = 154435, upload-time = "2026-06-08T19:29:34.746Z" },
 ]
 
 [[package]]

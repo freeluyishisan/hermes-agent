@@ -264,6 +264,16 @@ def _is_trivial_message(text: str) -> bool:
 
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+        # Lazy-install the SDK on first use, mirroring honcho/hindsight. Without
+        # this the provider degrades silently to inactive whenever the wheel is
+        # absent (e.g. after a bare `uv sync` that prunes the optional extra).
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("memory.supermemory", prompt=False)
+        except ImportError:
+            pass
+        except Exception as _e:
+            raise ImportError(str(_e))
         from supermemory import Supermemory
 
         self._api_key = api_key
