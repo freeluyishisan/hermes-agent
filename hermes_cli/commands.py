@@ -569,6 +569,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "background",
     # Lower-priority but still useful operational built-ins.
     "reasoning",
+    "voice",
     "usage",
     "platforms",
     "platform",
