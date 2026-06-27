@@ -96,6 +96,24 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_delegate_child_session_ids_filters_marked_rows(self, db):
+        """#45336: only rows carrying the ``_delegate_from`` marker are
+        reported. A normal root session and unknown ids are not."""
+        db.create_session(session_id="root1", source="tui")
+        db.create_session(
+            session_id="child1",
+            source="tui",
+            parent_session_id="root1",
+            model_config={"_delegate_from": "root1"},
+        )
+
+        assert db.delegate_child_session_ids(
+            ["root1", "child1", "missing"]
+        ) == {"child1"}
+        # Falsy / empty input is a no-op, never a full-table scan.
+        assert db.delegate_child_session_ids([]) == set()
+        assert db.delegate_child_session_ids(["", None]) == set()
+
     def test_update_session_cwd_persists_git_branch(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_session_cwd("s1", "/work/repo", git_branch="pets-feature")
