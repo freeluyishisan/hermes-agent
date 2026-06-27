@@ -994,6 +994,7 @@ export function DesktopController() {
     onGatewayReady: g => {
       gatewayRef.current = g
     },
+    refreshActiveSession: () => hydrateFromStoredSession(3),
     refreshHermesConfig,
     refreshSessions
   })
