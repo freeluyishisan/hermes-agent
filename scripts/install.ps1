@@ -1852,6 +1852,60 @@ except Exception:
             throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }
         Write-Success "Baseline imports verified in venv"
+
+        # The import probe above proves the venv Python is healthy, but it does
+        # NOT prove the native `venv\Scripts\hermes.exe` launcher is healthy.
+        # On some Windows installs uv leaves behind a broken trampoline that
+        # exits immediately with "uv trampoline failed to canonicalize script
+        # path" even though imports via python.exe are fine. Probe the actual
+        # launcher and, if needed, rewrite only the entry-point shims with the
+        # venv's pip-generated launcher.
+        $hermesExe = "$InstallDir\venv\Scripts\hermes.exe"
+        if (Test-Path $hermesExe) {
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                & $hermesExe --version 2>&1 | Out-Null
+                $launcherExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $prevEAP
+            }
+            if ($launcherExitCode -ne 0) {
+                Write-Warn "hermes.exe launcher self-check failed -- rebuilding entry-point shims with venv pip..."
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try {
+                    & $venvPython -m pip --version 2>&1 | Out-Null
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Info "Bootstrapping pip into venv for launcher repair..."
+                        & $venvPython -m ensurepip --upgrade 2>&1 | Out-Null
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Failed to bootstrap pip into venv for launcher repair."
+                        }
+                    }
+                    & $venvPython -m pip install --no-deps --force-reinstall -e . 2>&1 | ForEach-Object { Write-Host "    $_" }
+                    $launcherRepairExitCode = $LASTEXITCODE
+                } finally {
+                    $ErrorActionPreference = $prevEAP
+                }
+                if ($launcherRepairExitCode -ne 0) {
+                    throw "Failed to rebuild Windows hermes.exe launcher. Manual recovery: $venvPython -m pip install --no-deps --force-reinstall -e ."
+                }
+
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try {
+                    & $hermesExe --version 2>&1 | Out-Null
+                    $launcherExitCode = $LASTEXITCODE
+                } finally {
+                    $ErrorActionPreference = $prevEAP
+                }
+                if ($launcherExitCode -ne 0) {
+                    throw "hermes.exe launcher is still unhealthy after rebuild. Manual recovery: $venvPython -m pip install --no-deps --force-reinstall -e ."
+                }
+            }
+            Write-Success "Windows hermes.exe launcher verified"
+        }
     }
 
     # Verify the dashboard deps specifically -- they're the most common thing

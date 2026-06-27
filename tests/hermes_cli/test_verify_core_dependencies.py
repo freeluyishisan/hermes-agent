@@ -264,3 +264,100 @@ class TestResolveInstallTargetPython:
                 ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "does_not_exist")}
             )
             assert result is None
+
+
+class TestWindowsLauncherRepair:
+    def test_broken_uv_trampoline_is_rebuilt_with_venv_pip(
+        self, temp_pyproject, fake_venv_python
+    ):
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+        scripts_dir = venv_root / "Scripts"
+        launcher = scripts_dir / "hermes.exe"
+        launcher.write_text("fake launcher")
+
+        launcher_checks = {"count": 0}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if list(cmd[:2]) == [str(py), "-c"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if list(cmd) == [str(launcher), "--version"]:
+                launcher_checks["count"] += 1
+                if launcher_checks["count"] == 1:
+                    return MagicMock(
+                        returncode=1,
+                        stdout="",
+                        stderr="uv trampoline failed to canonicalize script path\n",
+                    )
+                return MagicMock(returncode=0, stdout="hermes 1.2.3\n", stderr="")
+            if list(cmd) == [str(py), "-m", "pip", "--version"]:
+                return MagicMock(returncode=0, stdout="pip 25.0\n", stderr="")
+            raise AssertionError(f"unexpected subprocess.run call: {cmd!r}")
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("hermes_cli.main._is_windows", return_value=True), \
+             patch("hermes_cli.main._venv_scripts_dir", return_value=scripts_dir), \
+             patch("hermes_cli.main._run_quarantined_install") as mock_rebuild:
+
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+            mock_rebuild.assert_called_once_with(
+                [
+                    str(py),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-deps",
+                    "--force-reinstall",
+                    "-e",
+                    ".",
+                ],
+                env=env,
+                scripts_dir=scripts_dir,
+            )
+
+    def test_launcher_rebuild_bootstraps_pip_when_uv_venv_lacks_it(
+        self, temp_pyproject, fake_venv_python
+    ):
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+        scripts_dir = venv_root / "Scripts"
+        launcher = scripts_dir / "hermes.exe"
+        launcher.write_text("fake launcher")
+
+        launcher_checks = {"count": 0}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if list(cmd[:2]) == [str(py), "-c"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if list(cmd) == [str(launcher), "--version"]:
+                launcher_checks["count"] += 1
+                if launcher_checks["count"] == 1:
+                    return MagicMock(
+                        returncode=1,
+                        stdout="",
+                        stderr="uv trampoline failed to canonicalize script path\n",
+                    )
+                return MagicMock(returncode=0, stdout="hermes 1.2.3\n", stderr="")
+            if list(cmd) == [str(py), "-m", "pip", "--version"]:
+                return MagicMock(returncode=1, stdout="", stderr="No module named pip")
+            if list(cmd) == [str(py), "-m", "ensurepip", "--upgrade", "--default-pip"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected subprocess.run call: {cmd!r}")
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run) as mock_run, \
+             patch("hermes_cli.main._is_windows", return_value=True), \
+             patch("hermes_cli.main._venv_scripts_dir", return_value=scripts_dir), \
+             patch("hermes_cli.main._run_quarantined_install"):
+
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+            ensurepip_calls = [
+                call for call in mock_run.call_args_list
+                if call.args[0] == [str(py), "-m", "ensurepip", "--upgrade", "--default-pip"]
+            ]
+            assert ensurepip_calls, "launcher repair should bootstrap pip before rebuilding shims"

@@ -52,6 +52,11 @@ def test_uv_venv_and_dependency_installs_relax_eap() -> None:
     _assert_relaxed_call(text, r"& \$UvCmd venv venv --python \$PythonVersion")
     _assert_relaxed_call(text, r"& \$UvCmd sync --extra all --locked")
     _assert_relaxed_call(text, r"& \$UvCmd pip install -e \$tier\.Spec")
+    _assert_relaxed_call(text, r"& \$hermesExe --version")
+    _assert_relaxed_call(
+        text,
+        r"& \$venvPython -m pip install --no-deps --force-reinstall -e \.",
+    )
 
 
 def test_uv_venv_failure_is_not_swallowed_after_eap_relax() -> None:
@@ -92,3 +97,18 @@ def test_native_eap_helper_always_restores_previous_preference() -> None:
     assert '$ErrorActionPreference = "Continue"' in body
     assert "finally" in body
     assert "$ErrorActionPreference = $prevEAP" in body
+
+
+def test_windows_launcher_probe_repairs_broken_uv_trampoline() -> None:
+    text = _install_ps1()
+    assert "uv trampoline failed to canonicalize script" in text, (
+        "install.ps1 should document why it probes hermes.exe itself after the "
+        "baseline import check"
+    )
+    assert "Windows hermes.exe launcher verified" in text, (
+        "install.ps1 should verify the native launcher before returning success"
+    )
+    assert "--no-deps --force-reinstall -e ." in text, (
+        "broken Windows launchers should be rebuilt with the venv's pip so we "
+        "rewrite only the entry-point shims instead of repeating the uv trampoline"
+    )

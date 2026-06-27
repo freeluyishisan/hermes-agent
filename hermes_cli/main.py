@@ -7612,77 +7612,75 @@ def _verify_core_dependencies_installed(
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     missing = _missing_deps()
-    if not missing:
-        return
-
-    print(
-        f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
-        f"{', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}"
-    )
-    print("  → Reinstalling base group with --reinstall to repair...")
-
-    # Reinstall base group with --reinstall so uv re-resolves from scratch
-    # against the current pyproject. We don't pass ``[{group}]`` here on
-    # purpose — the missing dep is in *base* deps; rerunning the full all-
-    # extras install can cost minutes and trips on whatever optional extra
-    # was already broken upstream. Base is fast and is what's actually wrong.
-    #
-    # Quarantine the running ``hermes.exe`` first: ``--reinstall -e .``
-    # rewrites the entry-point shims, and on Windows pip can't overwrite the
-    # live launcher, which would leave ``hermes`` off PATH.
-    scripts_dir = _venv_scripts_dir() if _is_windows() else None
-    repair_args = ["install", "--reinstall", "-e", "."]
-    try:
-        _run_quarantined_install(
-            install_cmd_prefix + repair_args, env=env, scripts_dir=scripts_dir
-        )
-    except subprocess.CalledProcessError as e:
-        logger.warning("dep verification: repair install failed: %s", e)
-        print("  ⚠ Repair install failed; check `hermes update` output above.")
-        return
-
-    still_missing = _missing_deps()
-    if not still_missing:
-        print("  ✓ All declared core dependencies now installed")
-        return
-
-    # Last-ditch: install each remaining missing dep with its pin directly.
-    # Useful when uv's resolver thinks the env is satisfied but the on-disk
-    # package metadata says otherwise (rare but observed).
-    name_to_spec = {}
-    for spec in raw_deps:
-        head = spec.split(";", 1)[0].strip()
-        bare = head
-        for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
-            if op in bare:
-                bare = bare.split(op, 1)[0]
-                break
-        name_to_spec[bare.strip().split("[", 1)[0].strip()] = head
-
-    specs = [name_to_spec.get(n, n) for n in still_missing]
-    print(
-        f"  → Force-installing remaining missing dep(s): {', '.join(specs)}"
-    )
-    try:
-        _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "--reinstall", *specs], env=env
-        )
-    except subprocess.CalledProcessError as e:
-        logger.warning("dep verification: per-package repair failed: %s", e)
+    if missing:
         print(
-            f"  ⚠ Could not install: {', '.join(still_missing)}. "
-            "Run `hermes update --force` after closing other hermes processes."
+            f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
+            f"{', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}"
         )
-        return
+        print("  → Reinstalling base group with --reinstall to repair...")
 
-    final_missing = _missing_deps()
-    if final_missing:
-        print(
-            f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "
-            "Run `hermes update --force` after closing other hermes processes."
-        )
-    else:
+        # Reinstall base group with --reinstall so uv re-resolves from scratch
+        # against the current pyproject. We don't pass ``[{group}]`` here on
+        # purpose — the missing dep is in *base* deps; rerunning the full all-
+        # extras install can cost minutes and trips on whatever optional extra
+        # was already broken upstream. Base is fast and is what's actually wrong.
+        #
+        # Quarantine the running ``hermes.exe`` first: ``--reinstall -e .``
+        # rewrites the entry-point shims, and on Windows pip can't overwrite the
+        # live launcher, which would leave ``hermes`` off PATH.
+        scripts_dir = _venv_scripts_dir() if _is_windows() else None
+        repair_args = ["install", "--reinstall", "-e", "."]
+        try:
+            _run_quarantined_install(
+                install_cmd_prefix + repair_args, env=env, scripts_dir=scripts_dir
+            )
+        except subprocess.CalledProcessError as e:
+            logger.warning("dep verification: repair install failed: %s", e)
+            print("  ⚠ Repair install failed; check `hermes update` output above.")
+            return
+
+        still_missing = _missing_deps()
+        if still_missing:
+            # Last-ditch: install each remaining missing dep with its pin directly.
+            # Useful when uv's resolver thinks the env is satisfied but the on-disk
+            # package metadata says otherwise (rare but observed).
+            name_to_spec = {}
+            for spec in raw_deps:
+                head = spec.split(";", 1)[0].strip()
+                bare = head
+                for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
+                    if op in bare:
+                        bare = bare.split(op, 1)[0]
+                        break
+                name_to_spec[bare.strip().split("[", 1)[0].strip()] = head
+
+            specs = [name_to_spec.get(n, n) for n in still_missing]
+            print(
+                f"  → Force-installing remaining missing dep(s): {', '.join(specs)}"
+            )
+            try:
+                _run_install_with_heartbeat(
+                    install_cmd_prefix + ["install", "--reinstall", *specs], env=env
+                )
+            except subprocess.CalledProcessError as e:
+                logger.warning("dep verification: per-package repair failed: %s", e)
+                print(
+                    f"  ⚠ Could not install: {', '.join(still_missing)}. "
+                    "Run `hermes update --force` after closing other hermes processes."
+                )
+                return
+
+            final_missing = _missing_deps()
+            if final_missing:
+                print(
+                    f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "
+                    "Run `hermes update --force` after closing other hermes processes."
+                )
+                return
+
         print("  ✓ All declared core dependencies now installed")
+
+    _maybe_repair_windows_hermes_launcher(venv_python, env=env)
 
 
 def _resolve_install_target_python(
@@ -7711,6 +7709,110 @@ def _resolve_install_target_python(
             return first
 
     return None
+
+
+def _probe_windows_hermes_launcher(
+    venv_python: Path, *, env: dict[str, str] | None = None
+) -> tuple[bool, str]:
+    """Check whether ``venv\\Scripts\\hermes.exe`` can execute a fast path.
+
+    A healthy Windows launcher should answer ``--version`` immediately. When uv
+    writes a broken trampoline, the venv imports remain fine but the native
+    ``hermes.exe`` dies before Python starts, typically with
+    ``uv trampoline failed to canonicalize script path``.
+    """
+    if not _is_windows():
+        return True, ""
+
+    launcher = venv_python.parent / "hermes.exe"
+    if not launcher.exists():
+        return False, f"{launcher} is missing"
+
+    try:
+        result = subprocess.run(
+            [str(launcher), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=15,
+        )
+    except Exception as exc:
+        return False, str(exc)
+
+    if result.returncode == 0:
+        return True, ""
+
+    detail = (result.stderr or result.stdout or "").strip()
+    if detail:
+        detail = detail.splitlines()[0]
+    else:
+        detail = f"exit {result.returncode}"
+    return False, detail
+
+
+def _maybe_repair_windows_hermes_launcher(
+    venv_python: Path, *, env: dict[str, str] | None = None
+) -> None:
+    """Rebuild a broken Windows ``hermes.exe`` launcher with the venv's pip.
+
+    If ``uv pip install -e .`` left behind a bad uv trampoline, rerunning the
+    same uv command tends to reproduce the same broken launcher. Rewriting the
+    entry points via ``python -m pip --force-reinstall --no-deps -e .`` keeps
+    the already-installed dependencies intact but replaces the native shims with
+    pip's distlib-generated launchers.
+    """
+    healthy, detail = _probe_windows_hermes_launcher(venv_python, env=env)
+    if healthy:
+        return
+
+    print(
+        "  ⚠ Windows hermes launcher self-check failed"
+        f"{f': {detail}' if detail else ''}"
+    )
+    print(
+        "  → Rebuilding Windows entry-point shims with the venv's pip to bypass "
+        "the broken uv trampoline..."
+    )
+
+    pip_cmd = [str(venv_python), "-m", "pip"]
+    try:
+        pip_probe = subprocess.run(
+            pip_cmd + ["--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        if pip_probe.returncode != 0:
+            subprocess.run(
+                [str(venv_python), "-m", "ensurepip", "--upgrade", "--default-pip"],
+                cwd=PROJECT_ROOT,
+                check=True,
+                env=env,
+            )
+
+        _run_quarantined_install(
+            pip_cmd + ["install", "--no-deps", "--force-reinstall", "-e", "."],
+            env=env,
+            scripts_dir=_venv_scripts_dir(),
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.warning("launcher repair via venv pip failed: %s", exc)
+        print(
+            "  ⚠ Could not rebuild the Windows launcher automatically. "
+            f"Manual recovery: {' '.join(pip_cmd + ['install', '--no-deps', '--force-reinstall', '-e', '.'])}"
+        )
+        return
+
+    healthy, detail = _probe_windows_hermes_launcher(venv_python, env=env)
+    if healthy:
+        print("  ✓ Rebuilt the Windows hermes launcher")
+    else:
+        print(
+            "  ⚠ Windows hermes launcher still failed after the pip rebuild"
+            f"{f': {detail}' if detail else ''}"
+        )
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
