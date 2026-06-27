@@ -516,6 +516,15 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
             continue
         if not is_windows and entry.suffix:
             continue
+        # Skip large files (binaries, AppImages) — wrapper scripts are tiny
+        # shell scripts (< 4 KB).  Without this guard ``list_profiles()``
+        # reads every file in ~/.local/bin/ which can include 200+ MB
+        # binaries, adding 10-15 s of I/O per profile lookup.
+        try:
+            if entry.stat().st_size > 32_768:
+                continue
+        except OSError:
+            continue
         try:
             content = entry.read_text()
         except (OSError, UnicodeDecodeError):
