@@ -619,6 +619,7 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+_FALLBACK_INHERIT = object()
 
 
 # ---------------------------------------------------------------------------
@@ -1047,6 +1048,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Explicit child fallback policy.  Omitted = inherit parent chain;
+    # []/{} = no fallback; dict/list = child-specific fallback chain.
+    override_fallback_model: Any = _FALLBACK_INHERIT,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1239,11 +1243,16 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
+    # Inherit the parent's fallback provider chain by default so subagents can
+    # recover from rate-limits and credential exhaustion exactly like the
+    # top-level agent does.  A per-call/per-task model override may explicitly
+    # pass [] to isolate the child from the parent's fallback chain for strict
+    # cost control, or pass a dict/list to use a child-specific chain.
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    if override_fallback_model is _FALLBACK_INHERIT:
+        child_fallback = parent_fallback
+    else:
+        child_fallback = override_fallback_model
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1278,7 +1287,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=child_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -2121,11 +2130,124 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_model_fallback_override(model_obj: Dict[str, Any]) -> tuple[Any, bool]:
+    """Resolve optional fallback policy inside a delegate model override.
+
+    Missing/true/null means inherit the parent's fallback chain. ``false``
+    means no fallback for this child. A dict or list is passed through as the
+    child-specific fallback_model chain accepted by AIAgent.
+    """
+    if "fallback" not in model_obj:
+        return _FALLBACK_INHERIT, False
+
+    fallback = model_obj.get("fallback")
+    if fallback is False:
+        return [], True
+    if fallback is None or fallback is True:
+        return _FALLBACK_INHERIT, True
+    if isinstance(fallback, dict):
+        if not fallback:
+            return [], True
+        if not (fallback.get("provider") and fallback.get("model")):
+            raise ValueError(
+                "model.fallback object must include both 'provider' and 'model'."
+            )
+        return fallback, True
+    if isinstance(fallback, list):
+        for idx, entry in enumerate(fallback):
+            if not isinstance(entry, dict) or not (entry.get("provider") and entry.get("model")):
+                raise ValueError(
+                    f"model.fallback[{idx}] must be an object with 'provider' and 'model'."
+                )
+        return list(fallback), True
+
+    raise ValueError(
+        "model.fallback must be false, null/true, a fallback object, or a list of fallback objects."
+    )
+
+
+def _resolve_model_override(
+    model_obj: Any,
+    parent_agent,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a per-task/top-level model override into a credential dict.
+
+    ``model_obj`` is a dict with optional ``provider`` and ``model`` keys,
+    matching the cron job model override pattern. Returns a credential dict
+    (model, provider, base_url, api_key, api_mode) or ``None`` when no
+    override is requested.
+
+    Optional ``fallback`` controls the delegated child's fallback chain:
+    omitted = inherit parent chain, false = no fallback, dict/list = explicit
+    child fallback chain.
+
+    Raises ``ValueError`` on unresolvable provider references.
+    """
+    if not model_obj or not isinstance(model_obj, dict):
+        return None
+
+    fallback_model, fallback_specified = _resolve_model_fallback_override(model_obj)
+    model_name = str(model_obj.get("model") or "").strip() or None
+    provider_name = str(model_obj.get("provider") or "").strip() or None
+
+    # Bare "custom" is incomplete — ignore so it doesn't break resolution.
+    if provider_name == "custom":
+        provider_name = None
+
+    if not model_name and not provider_name:
+        return None
+
+    if not provider_name:
+        # Model-only override — use parent's provider credentials, just swap
+        # the model name.  This is the common "use a cheaper model for this
+        # task" pattern.
+        return {
+            "model": model_name,
+            "provider": getattr(parent_agent, "provider", None),
+            "base_url": getattr(parent_agent, "base_url", None),
+            "api_key": None,  # inherit from parent
+            "api_mode": getattr(parent_agent, "api_mode", None),
+            "fallback_model": fallback_model,
+            "fallback_specified": fallback_specified,
+        }
+
+    # Provider specified — resolve full credentials via the runtime system.
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=provider_name, target_model=model_name
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot resolve model override provider '{provider_name}': {exc}. "
+            f"Check that the provider is configured (API key set, valid provider name)."
+        ) from exc
+
+    api_key = runtime.get("api_key", "")
+    if not api_key:
+        raise ValueError(
+            f"Model override provider '{provider_name}' resolved but has no API key. "
+            f"Set the API key for this provider first."
+        )
+
+    return {
+        "model": model_name or runtime.get("model"),
+        "provider": runtime.get("provider", provider_name),
+        "base_url": runtime.get("base_url"),
+        "api_key": api_key,
+        "api_mode": runtime.get("api_mode", "chat_completions"),
+        "fallback_model": fallback_model,
+        "fallback_specified": fallback_specified,
+    }
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    model: Optional[Dict[str, Any]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -2212,6 +2334,15 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Top-level model override (from tool call argument) overrides delegation
+    # config credentials.  Per-task overrides take further precedence.
+    top_model_creds = None
+    if model:
+        try:
+            top_model_creds = _resolve_model_override(model, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2273,28 +2404,46 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Per-task model override > top-level model override > delegation config.
+            task_model_creds = None
+            if "model" in t:
+                task_model_creds = _resolve_model_override(t["model"], parent_agent)
+                if task_model_creds is None:
+                    return tool_error(
+                        f"Task {i}: 'model' must have at least 'model' or 'provider' key."
+                    )
+            effective_creds = task_model_creds or top_model_creds or creds
+            if task_model_creds and task_model_creds.get("fallback_specified"):
+                effective_fallback_model = task_model_creds.get("fallback_model", _FALLBACK_INHERIT)
+            elif top_model_creds and top_model_creds.get("fallback_specified"):
+                effective_fallback_model = top_model_creds.get("fallback_model", _FALLBACK_INHERIT)
+            else:
+                effective_fallback_model = _FALLBACK_INHERIT
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=effective_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=effective_creds["provider"],
+                override_base_url=effective_creds["base_url"],
+                override_api_key=effective_creds["api_key"],
+                override_api_mode=effective_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or effective_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else effective_creds.get("args"))
                 ),
                 role=effective_role,
+                override_fallback_model=effective_fallback_model,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3110,6 +3259,26 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string", "description": "Provider name (e.g. 'anthropic', 'openrouter', 'xiaomi'). If omitted, inherits the parent's provider."},
+                    "model": {"type": "string", "description": "Model ID (e.g. 'claude-sonnet-4', 'deepseek/deepseek-chat'). If omitted, uses the provider's default."},
+                    "fallback": {
+                        "description": (
+                            "Optional fallback policy for these child agents. Omit/null/true to inherit the parent's fallback chain; "
+                            "false or [] to disable fallback for strict cost caps; or pass a fallback object/list of objects with provider+model."
+                        )
+                    },
+                },
+                "description": (
+                    "Optional model override for all child agents. "
+                    "Overrides delegation.* config for this call. "
+                    "Per-task 'model' in the tasks array takes further precedence. "
+                    "Use for routing delegation to a different model tier; set fallback=false "
+                    "to prevent fallback into the parent's expensive chain."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3142,6 +3311,27 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "provider": {"type": "string", "description": "Provider name (e.g. 'anthropic', 'openrouter', 'xiaomi'). If omitted, inherits the parent's provider."},
+                                "model": {"type": "string", "description": "Model ID (e.g. 'claude-sonnet-4', 'deepseek/deepseek-chat'). If omitted, uses the provider's default."},
+                                "fallback": {
+                                    "description": (
+                                        "Optional fallback policy for this task. Omit/null/true to inherit the top-level/parent fallback chain; "
+                                        "false or [] to disable fallback; or pass fallback object/list with provider+model."
+                                    )
+                                },
+                            },
+                            "description": (
+                                "Per-task model override. Overrides both the top-level 'model' "
+                                "and the delegation.* config for this task only. "
+                                "Use for routing different tasks to different model tiers "
+                                "(e.g. expensive model for reasoning, cheap model for formatting). "
+                                "Set fallback=false for cost-capped tasks that must not fall back "
+                                "to the parent's chain."
+                            ),
                         },
                     },
                     "required": ["goal"],
@@ -3225,6 +3415,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
