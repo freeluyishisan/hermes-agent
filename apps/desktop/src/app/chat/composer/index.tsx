@@ -192,6 +192,7 @@ export function ChatBar({
   onPickFiles,
   onPickFolders,
   onPickImages,
+  onPickWindow,
   onRemoveAttachment,
   onSteer,
   onSubmit,
@@ -2032,6 +2033,7 @@ export function ChatBar({
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}
       onPickImages={onPickImages}
+      onPickWindow={onPickWindow}
       state={state}
     />
   )
