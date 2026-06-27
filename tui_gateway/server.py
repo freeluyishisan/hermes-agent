@@ -2925,7 +2925,21 @@ def _sync_session_key_after_compress(
             pass
 
 
-def _get_usage(agent) -> dict:
+def _session_last_prompt_tokens(session: dict | None) -> int:
+    """Return the last persisted prompt-token count for a resumed session."""
+    try:
+        db = _get_db()
+        session_key = (session or {}).get("session_key")
+        if db and session_key:
+            row = db.get_session(session_key)
+            if row:
+                return int(row.get("last_prompt_tokens") or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def _get_usage(agent, *, fallback_last_prompt_tokens: int = 0) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
@@ -2939,7 +2953,12 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        ctx_used = (
+            getattr(comp, "last_prompt_tokens", 0)
+            or fallback_last_prompt_tokens
+            or usage["total"]
+            or 0
+        )
         ctx_max = getattr(comp, "context_length", 0) or 0
         if ctx_max:
             usage["context_used"] = ctx_used
@@ -3087,7 +3106,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "release_date": "",
         "update_behind": None,
         "update_command": "",
-        "usage": _get_usage(agent),
+        "usage": _get_usage(
+            agent,
+            fallback_last_prompt_tokens=_session_last_prompt_tokens(session),
+        ),
         "profile_name": _current_profile_name(),
     }
     try:
@@ -6095,7 +6117,10 @@ def _(rid, params: dict) -> dict:
         return err
     agent = session.get("agent")
     usage: dict = (
-        _get_usage(agent)
+        _get_usage(
+            agent,
+            fallback_last_prompt_tokens=_session_last_prompt_tokens(session),
+        )
         if agent is not None
         else {"calls": 0, "input": 0, "output": 0, "total": 0}
     )
