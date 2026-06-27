@@ -498,9 +498,20 @@ def strip_think_blocks(agent, content: str) -> str:
          ``gateway/stream_consumer.py``'s filter so models that mention
          ``<think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
-      4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
-         ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
-         case-insensitive.
+      4. Tag variants: any tag whose name contains one of the keywords
+         ``think``, ``thinking``, ``reasoning``, ``thought``, or
+         ``REASONING_SCRATCHPAD`` AS A DISTINCT TAG-NAME COMPONENT,
+         case-insensitive.  The keyword must be at the start of the tag,
+         or immediately preceded by a non-letter character (digit,
+         underscore, dash, ``/`` for closing tags, …), AND immediately
+         followed by a word boundary.  This covers canonical tags
+         (``<think>``, ``<thinking>``, …) and model-name-prefixed/
+         suffixed forms such as ``<M2_7think>``, ``<M2_7_thinking>``,
+         ``<M2_7reasoning>``, ``<deepseek_thought>`` while excluding
+         false positives like ``<overthink>``, ``<mythinking>``,
+         ``<rethink>``, ``<doublethink>`` where ``think`` is embedded
+         inside a regular English word (Jun 9 2026 "/think msg issue";
+         refined after maintainer review).
 
     Additionally strips standalone tool-call XML blocks that some open
     models (notably Gemma variants on OpenRouter) emit inside assistant
@@ -518,14 +529,29 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
-    # 1. Closed tag pairs — case-insensitive for all variants so
-    #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
-    #    the unterminated-tag pass and take trailing content with them.
-    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    # 1. Closed tag pairs — permissive tag-name matching so model-name
+    #    prefixed/suffixed variants (e.g. <M2_7think>, <deepseek_thought>)
+    #    are caught.  Both the open and close tag must contain the same
+    #    keyword as a substring; the close tag need not be identical to
+    #    the open tag (e.g. <M2_7think>…</think> is intentionally matched).
+    #    Jun 9 2026: added to fix the "/think msg issue" where prefixed tags
+    #    leaked raw reasoning to the user.
+    #    The keyword is anchored as a distinct tag-name component
+    #    (preceded by start-of-tag or a non-letter, followed by \b) so we
+    #    do not match <overthink>, <mythinking>, <rethink>, etc.  See
+    #    docstring point 4.
+    _THINK_KW = r'(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)'
+    # Tag-name component: optional prefix that ends in a non-letter
+    # (digit/underscore/dash, etc. — the kinds of chars that appear in
+    # model prefixes like "M2_7", "deepseek_"), then the keyword, then
+    # a word boundary so "think" in "thinkx" is not treated as a tag.
+    _THINK_TAG_BODY = rf'(?:[^>]*[^A-Za-z>])?{_THINK_KW}\b'
+    content = re.sub(
+        rf'<{_THINK_TAG_BODY}[^>]*>.*?</{_THINK_TAG_BODY}[^>]*>',
+        '',
+        content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.
@@ -554,15 +580,18 @@ def strip_think_blocks(agent, content: str) -> str:
     #    (start of text, or after a newline) with no matching close.
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
+    #    Tag-name is anchored as a distinct component (see _THINK_TAG_BODY)
+    #    so <overthink>x</overthink>-style false positives are not matched.
     content = re.sub(
-        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
+        rf'(?:^|\n)[ \t]*<{_THINK_TAG_BODY}[^>]*>.*$',
         '',
         content,
         flags=re.DOTALL | re.IGNORECASE,
     )
     # 3. Stray orphan open/close tags that slipped through.
+    #    Tag-name is anchored as a distinct component (see _THINK_TAG_BODY).
     content = re.sub(
-        r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+        rf'</?{_THINK_TAG_BODY}[^>]*>\s*',
         '',
         content,
         flags=re.IGNORECASE,

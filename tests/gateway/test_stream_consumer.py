@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer import (
+    GatewayStreamConsumer,
+    StreamConsumerConfig,
+    scrub_thinking_tags_in_prose,
+)
 
 
 # ── _clean_for_display unit tests ────────────────────────────────────────
@@ -83,6 +87,175 @@ class TestCleanForDisplay:
         # "MEDIA:" in upper case without a path won't match \S+ (space follows)
         # But "media:" is lowercase so won't match either
         assert result == text
+
+
+# ── scrub_thinking_tags_in_prose unit tests ──────────────────────────────
+# Jun 9 2026: defensive scrubber for the "/think msg issue" — catches
+# model-prefixed think-tag variants and orphan closes attached to
+# surrounding text without trailing whitespace that the upstream
+# stateful scrubber misses.  See gateway/stream_consumer.py for context.
+
+
+class TestScrubThinkingTagsInProse:
+    """Defensive think-tag scrubber runs on visible text right before send."""
+
+    # ── Model-prefixed variants: the actual bug ──
+
+    def test_model_prefixed_orphan_close_attached(self):
+        """The literal-tag-leak case: orphan close glued to text, no space."""
+        assert scrub_thinking_tags_in_prose(
+            "Hello" + "<" + "/M2_7think>world"
+        ) == "Helloworld"
+
+    def test_model_prefixed_orphan_close_deepseek(self):
+        assert scrub_thinking_tags_in_prose(
+            "Hello" + "<" + "/deepseek_thought>world"
+        ) == "Helloworld"
+
+    def test_model_prefixed_orphan_close_underscore_variant(self):
+        assert scrub_thinking_tags_in_prose(
+            "text" + "<" + "/M2_7_thinking>more"
+        ) == "textmore"
+
+    def test_model_prefixed_closed_pair(self):
+        assert scrub_thinking_tags_in_prose(
+            "<" + "M2_7think>reasoning" + "<" + "/M2_7think>visible"
+        ) == "visible"
+
+    def test_model_prefixed_open_tag_alone(self):
+        """Bare open tag (no close) is also removed."""
+        assert scrub_thinking_tags_in_prose(
+            "before " + "<" + "M2_7think> after"
+        ) == "before  after"
+
+    # ── Canonical (known) tag forms still work ──
+
+    @pytest.mark.parametrize(
+        "tag",
+        ["think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD"],
+    )
+    def test_canonical_closed_pair(self, tag):
+        s = f"<{tag}>x</{tag}>Hello"
+        assert scrub_thinking_tags_in_prose(s) == "Hello"
+
+    def test_canonical_orphan_close_attached(self):
+        assert scrub_thinking_tags_in_prose(
+            "Hello" + "<" + "/think>world"
+        ) == "Helloworld"
+
+    # ── Preservation: must NOT touch unrelated text ──
+
+    def test_plain_text_passthrough(self):
+        assert scrub_thinking_tags_in_prose("Hello world!") == "Hello world!"
+
+    def test_comparison_operator_preserved(self):
+        assert scrub_thinking_tags_in_prose("2 < 5 is true") == "2 < 5 is true"
+
+    def test_html_unrelated_tag_preserved(self):
+        assert scrub_thinking_tags_in_prose(
+            "Click <a href='x'>here</a> please"
+        ) == "Click <a href='x'>here</a> please"
+
+    def test_self_closing_div_preserved(self):
+        assert scrub_thinking_tags_in_prose(
+            "Before<br/>after"
+        ) == "Before<br/>after"
+
+    # ── Idempotency & edge cases ──
+
+    def test_idempotent(self):
+        """Running twice produces the same output as running once."""
+        text = "Hello" + "<" + "/M2_7think>world" + "<" + "deepseek_thought>x" + "<" + "/deepseek_thought>plain"
+        once = scrub_thinking_tags_in_prose(text)
+        twice = scrub_thinking_tags_in_prose(once)
+        assert once == twice
+
+    def test_empty_string(self):
+        assert scrub_thinking_tags_in_prose("") == ""
+
+    def test_none_safe(self):
+        # Guards against accidental None leakage from upstream scrub paths.
+        assert scrub_thinking_tags_in_prose("") == ""  # empty string is the safe contract
+
+    def test_case_insensitive(self):
+        s = "<THINK>x</Think>Hello"
+        assert scrub_thinking_tags_in_prose(s) == "Hello"
+
+    def test_mixed_known_and_prefixed_in_one_string(self):
+        """Closed pairs, prefixed pairs, and orphan closes all collapse.
+
+        The text BETWEEN two orphan closes is treated as leaked reasoning
+        and stripped along with the tags — that's the defensive behavior.
+        """
+        s = (
+            "<think>reasoning</think>kept"
+            + "<" + "/M2_7think>leaked"
+            + "visible" + "<" + "/deepseek_thought>more"
+        )
+        result = scrub_thinking_tags_in_prose(s)
+        # All tag-shaped content is gone.
+        assert "<think>" not in result
+        assert "M2_7" not in result
+        assert "deepseek" not in result
+        # The reasoning that leaked between two orphan closes is also gone.
+        assert "leaked" not in result
+        # The visible prose before and after is preserved.
+        assert "kept" in result
+        assert "visible" not in result  # also between two close tags → scrubbed
+        assert "more" in result
+
+    # ── Model-prefixed variants with attributes / mixed suffixes ──
+
+    def test_model_prefixed_with_attribute(self):
+        """Model-prefixed tags carrying XML attributes are still stripped.
+
+        The non-letter boundary check accepts a space (between the keyword
+        and the attribute) as a valid separator.
+        """
+        assert scrub_thinking_tags_in_prose(
+            "<" + "M2_7think attr=\"x\">reasoning"
+            + "<" + "/M2_7think>kept"
+        ) == "kept"
+
+    def test_model_prefixed_underscore_keyword_with_attribute(self):
+        assert scrub_thinking_tags_in_prose(
+            "<" + "M2_7_thinking attr=\"x\">reasoning"
+            + "<" + "/M2_7_thinking>kept"
+        ) == "kept"
+
+    # ── Substring-in-English-word tags: must NOT be stripped ──
+    # These tags contain the keyword as a substring inside a real English
+    # word, not as a distinct tag-name component.  The June 9 2026
+    # permissive regex <[^>]*think[^>]*> over-matched these; the
+    # maintainer-requested refinement anchors the keyword to a non-letter
+    # (or start-of-tag) boundary, excluding them.
+
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "overthink",
+            "mythinking",
+            "rethink",
+            "doublethink",
+            "unthinking",
+            "thinkx",   # keyword followed by a word char → \b fails
+        ],
+    )
+    def test_english_word_substring_preserved(self, tag):
+        """Tags where 'think' is embedded in an English word are kept as-is.
+
+        The reasoning: 'overthink', 'mythinking', 'rethink' etc. are
+        extremely unlikely to be model-prefixed think-tag variants, and
+        stripping them would silently mutilate user-visible prose.
+        """
+        s = f"<{tag}>x</{tag}>visible"
+        # The whole thing should pass through unchanged.
+        assert scrub_thinking_tags_in_prose(s) == s
+
+    def test_english_word_substring_prose_preserved(self):
+        """Prose that mentions 'overthink' etc. is left alone."""
+        s = "Let me <overthink> this for a moment."
+        assert scrub_thinking_tags_in_prose(s) == s
 
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────

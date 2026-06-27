@@ -47,6 +47,65 @@ _NEW_SEGMENT = object()
 _COMMENTARY = object()
 
 
+# ── Defensive think-tag scrubber ─────────────────────────────────────────
+# Jun 9 2026: added to plug the /think msg leak.  The stateful scrubber
+# upstream (_filter_and_accumulate) and the agent-level strip_think_blocks
+# both have hardcoded tag lists that miss model-name-prefixed variants
+# (e.g. </M2_7think>, </deepseek_thought>) — and the orphan-pass regex
+# requires trailing whitespace, so an orphan close glued to surrounding
+# text slips through.  This module-level scrubber runs on the *visible*
+# text right before each platform send, catches anything tag-shaped that
+# the upstream paths missed, and is idempotent.
+_THINK_KW = r'(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)'
+# Tag-name component: optional prefix that ends in a non-letter
+# (digit/underscore/dash, etc. — the kinds of chars that appear in model
+# prefixes like "M2_7", "deepseek_"), then the keyword, then a word
+# boundary so "think" in "thinkx" is not treated as a tag.  Same anchor
+# as agent/agent_runtime_helpers.py:strip_think_blocks so the two
+# scrubbers agree on what counts as a think-tag.
+_THINK_TAG_BODY = rf'(?:[^>]*[^A-Za-z>])?{_THINK_KW}\b'
+_THINK_CLOSED_PAIR_RE = re.compile(
+    rf'<{_THINK_TAG_BODY}[^>]*>.*?</{_THINK_TAG_BODY}[^>]*>',
+    re.DOTALL | re.IGNORECASE,
+)
+_THINK_TAG_RE = re.compile(
+    rf'<{_THINK_TAG_BODY}[^>]*>',
+    re.IGNORECASE,
+)
+
+
+def scrub_thinking_tags_in_prose(text: str) -> str:
+    """Remove any residual think-tag characters from user-visible prose.
+
+    Defensive safety-net pass: runs AFTER all upstream stateful scrubbing
+    and the agent-level strip_think_blocks.  Catches three classes of leak:
+
+      1. Model-prefixed tag variants the hardcoded tag lists miss
+         (e.g. </M2_7think>, </deepseek_thought>).
+      2. Orphan close tags attached to surrounding text without trailing
+         whitespace (the upstream orphan-pass regex requires ``\\s*``).
+      3. Anything else that ends up looking like a think-tag in the
+         final visible text, regardless of why.
+
+    The pattern matches any tag whose name contains a known reasoning
+    keyword AS A DISTINCT TAG-NAME COMPONENT (start-of-tag or preceded
+    by a non-letter; followed by a word boundary).  This catches model
+    prefixes like ``<M2_7think>`` and ``<deepseek_thought>`` while
+    excluding English-word substrings like ``<overthink>`` and
+    ``<mythinking>``.  False positives (a model legitimately using a
+    tag like ``<thinkful>`` in prose) are vastly less harmful than
+    false negatives (a literal think-tag close leaking raw reasoning
+    to the user); when in doubt, scrub.
+
+    Idempotent: running twice produces the same output as running once.
+    """
+    if not text:
+        return ""
+    text = _THINK_CLOSED_PAIR_RE.sub("", text)
+    text = _THINK_TAG_RE.sub("", text)
+    return text
+
+
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
@@ -811,6 +870,8 @@ class GatewayStreamConsumer:
         Returns the message_id so callers can thread subsequent chunks.
         """
         text = self._clean_for_display(text)
+        # Defensive think-tag scrub — see scrub_thinking_tags_in_prose.
+        text = scrub_thinking_tags_in_prose(text)
         if not text.strip():
             return reply_to_id
         try:
@@ -877,6 +938,8 @@ class GatewayStreamConsumer:
         Retries each chunk once on flood-control failures with a short delay.
         """
         final_text = self._clean_for_display(text)
+        # Defensive think-tag scrub — see scrub_thinking_tags_in_prose.
+        final_text = scrub_thinking_tags_in_prose(final_text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
@@ -1355,6 +1418,10 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # Defensive: scrub any think-tag characters the upstream scrubbers
+        # missed (model-prefixed variants, orphan closes glued to text, …).
+        # Jun 9 2026 — see scrub_thinking_tags_in_prose docstring.
+        text = scrub_thinking_tags_in_prose(text)
         # A bare streaming cursor is not meaningful user-visible content and
         # can render as a stray tofu/white-box message on some clients.
         visible_without_cursor = text
