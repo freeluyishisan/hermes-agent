@@ -1582,21 +1582,61 @@ def _tui_need_rebuild(root: Path) -> bool:
     return False
 
 
+def _prepend_path_entry(path: Path) -> None:
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    entry = str(path)
+    if path.is_dir() and entry not in parts:
+        parts.insert(0, entry)
+        os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def _find_node_on_user_shell_path() -> Path | None:
+    user_shell = os.environ.get("SHELL")
+    if not user_shell or not os.path.isfile(user_shell) or not os.access(user_shell, os.X_OK):
+        return None
+
+    try:
+        result = subprocess.run(
+            [user_shell, "-ic", "command -v node"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    for line in (result.stdout or "").splitlines():
+        candidate = Path(line.strip())
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.resolve()
+    return None
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 
-    If either is missing and scripts/lib/node-bootstrap.sh is available, source
-    it and call `ensure_node` (fnm/nvm/proto/brew/bundled cascade). After
-    install, capture the resolved node binary path from the bash subprocess
-    and prepend its directory to os.environ["PATH"] so shutil.which finds the
-    new binaries in this Python process — regardless of which version manager
-    was used (nvm, fnm, proto, brew, or the bundled fallback).
+    If the current process PATH misses a shell-managed Node, first probe the
+    user's interactive shell (nvm, fnm, Volta, mise, asdf, etc.) and prepend the
+    resolved Node directory. If either binary is still missing and
+    scripts/lib/node-bootstrap.sh is available, source it and call `ensure_node`
+    (fnm/nvm/proto/brew/bundled cascade). After install, capture the resolved
+    node binary path from the bash subprocess and prepend its directory to
+    os.environ["PATH"] so shutil.which finds the new binaries in this Python
+    process.
 
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
     if shutil.which("node") and shutil.which("npm"):
         return
+
+    user_node = _find_node_on_user_shell_path()
+    if user_node:
+        _prepend_path_entry(user_node.parent)
+        if shutil.which("node") and shutil.which("npm"):
+            return
+
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
         return
 
@@ -1625,20 +1665,12 @@ def _ensure_tui_node() -> None:
     except (OSError, subprocess.SubprocessError):
         return
 
-    parts = os.environ.get("PATH", "").split(os.pathsep)
-    extras: list[Path] = []
-
     resolved = (result.stdout or "").strip()
     if resolved:
-        extras.append(Path(resolved).resolve().parent)
+        _prepend_path_entry(Path(resolved).resolve().parent)
 
-    extras.extend([Path(hermes_home) / "node" / "bin", Path.home() / ".local" / "bin"])
-
-    for extra in extras:
-        s = str(extra)
-        if extra.is_dir() and s not in parts:
-            parts.insert(0, s)
-    os.environ["PATH"] = os.pathsep.join(parts)
+    for extra in (Path(hermes_home) / "node" / "bin", Path.home() / ".local" / "bin"):
+        _prepend_path_entry(extra)
 
 
 def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:

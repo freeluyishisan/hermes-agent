@@ -790,15 +790,62 @@ node_satisfies_build() {
     return 1
 }
 
+find_node_on_user_shell_path() {
+    local user_shell="${SHELL:-}"
+    [ -n "$user_shell" ] && [ -x "$user_shell" ] || return 1
+
+    local candidate
+    while IFS= read -r candidate; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done <<EOF
+$("$user_shell" -ic 'command -v node' 2>/dev/null || true)
+EOF
+
+    return 1
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
+    local node_bin=""
+    local node_version=""
+    local unusable_node_bin=""
+    local unusable_node_version=""
+
+    if node_bin="$(command -v node 2>/dev/null)" && [ -n "$node_bin" ]; then
+        node_version="$($node_bin --version 2>/dev/null || true)"
+        if node_satisfies_build "$node_version"; then
+            log_success "Node.js $node_version found"
+            HAS_NODE=true
+            return 0
+        fi
+        unusable_node_bin="$node_bin"
+        unusable_node_version="$node_version"
+    fi
+
+    if node_bin="$(find_node_on_user_shell_path)" && [ -n "$node_bin" ]; then
+        node_version="$($node_bin --version 2>/dev/null || true)"
+        if node_satisfies_build "$node_version"; then
+            export PATH="$(dirname "$node_bin"):$PATH"
+            log_success "Node.js $node_version found from user shell PATH"
+            HAS_NODE=true
+            return 0
+        fi
+        if [ -z "$unusable_node_bin" ]; then
+            unusable_node_bin="$node_bin"
+            unusable_node_version="$node_version"
+        fi
+    fi
+    
     # Repair pre-existing Hermes-managed installs where `npm install -g` lands
     # off PATH. No-op when there's no managed Node, so this is safe to run on
     # every install — including re-runs that skip the Node (re)install below.
     configure_managed_node_npm_prefix
 
-    if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
+    if ® &> /dev/null && node_satisfies_build "$(node --version)"; then
         log_success "Node.js $(node --version) found"
         HAS_NODE=true
         return 0
@@ -812,8 +859,8 @@ check_node() {
         return 0
     fi
 
-    if command -v node &> /dev/null; then
-        log_warn "Node.js $(node --version) is too old for the desktop build (need ^20.19 or >=22.12) — installing Hermes-managed Node $NODE_VERSION LTS..."
+    if [ -n "$unusable_node_bin" ]; then
+        log_warn "Node.js $unusable_node_version is too old for the desktop build (need ^20.19 or >=22.12) — installing Hermes-managed Node $NODE_VERSION LTS..."
     elif [ "$DISTRO" = "termux" ]; then
         log_info "Node.js not found — installing Node.js via pkg..."
     else
@@ -912,20 +959,14 @@ install_node() {
         return 0
     fi
 
-    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
-    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
-    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
+    # Place into ~/.hermes/node/ and expose it only to this installer process.
+    # Do not symlink node/npm/npx into the user-facing command dir: that shadows
+    # existing Node managers such as nvm, fnm, Volta, mise, and asdf.
     rm -rf "$HERMES_HOME/node"
     mkdir -p "$HERMES_HOME"
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
-
-    local node_link_dir
-    node_link_dir="$(get_command_link_dir)"
-    mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    "$HERMES_HOME/node/bin/npm" config set prefix "$HERMES_HOME/node" 2>/dev/null || true
 
     configure_managed_node_npm_prefix
 
