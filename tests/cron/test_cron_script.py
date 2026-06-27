@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,41 @@ class TestRunJobScript:
         assert success is True
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
+
+    def test_llm_job_empty_script_output_closes_unused_session_db(self, cron_env, monkeypatch):
+        """LLM jobs with empty script output skip the agent without leaking state.db fds."""
+        from cron import scheduler as sched_mod
+
+        class FakeSessionDB:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        fake_db = FakeSessionDB()
+        monkeypatch.setitem(
+            sys.modules,
+            "run_agent",
+            types.SimpleNamespace(AIAgent=object),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_state",
+            types.SimpleNamespace(SessionDB=lambda: fake_db),
+        )
+        monkeypatch.setattr(sched_mod, "_run_job_script", lambda _path: (True, ""))
+
+        success, _doc, final_response, error = sched_mod.run_job({
+            "id": "job123",
+            "name": "empty-script-job",
+            "prompt": "Report only if there is data.",
+            "script": "empty.py",
+        })
+
+        assert success is True
+        assert final_response == sched_mod.SILENT_MARKER
+        assert error is None
+        assert fake_db.closed is True
 
 
 class TestBuildJobPromptWithScript:
@@ -565,3 +601,76 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestCronFdLimit:
+    def test_ensure_cron_fd_limit_raises_low_soft_limit(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        calls = []
+
+        class FakeResource:
+            RLIMIT_NOFILE = object()
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(which):
+                assert which is FakeResource.RLIMIT_NOFILE
+                return (256, 4096)
+
+            @staticmethod
+            def setrlimit(which, limits):
+                assert which is FakeResource.RLIMIT_NOFILE
+                calls.append(limits)
+
+        monkeypatch.setitem(sys.modules, "resource", FakeResource)
+        monkeypatch.setenv("HERMES_CRON_MIN_NOFILE", "1024")
+        monkeypatch.setattr(scheduler, "_fd_limit_checked", False)
+
+        scheduler._ensure_cron_fd_limit()
+
+        assert calls == [(1024, 4096)]
+
+    def test_ensure_cron_fd_limit_clamps_to_hard_limit(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        calls = []
+
+        class FakeResource:
+            RLIMIT_NOFILE = object()
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(which):
+                assert which is FakeResource.RLIMIT_NOFILE
+                return (256, 512)
+
+            @staticmethod
+            def setrlimit(which, limits):
+                assert which is FakeResource.RLIMIT_NOFILE
+                calls.append(limits)
+
+        monkeypatch.setitem(sys.modules, "resource", FakeResource)
+        monkeypatch.setenv("HERMES_CRON_MIN_NOFILE", "1024")
+        monkeypatch.setattr(scheduler, "_fd_limit_checked", False)
+
+        scheduler._ensure_cron_fd_limit()
+
+        assert calls == [(512, 512)]
+
+    def test_ensure_cron_fd_limit_noops_when_disabled(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        class FakeResource:
+            RLIMIT_NOFILE = object()
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(which):  # pragma: no cover - should not be called
+                raise AssertionError("disabled fd-limit helper imported resource")
+
+        monkeypatch.setitem(sys.modules, "resource", FakeResource)
+        monkeypatch.setenv("HERMES_CRON_MIN_NOFILE", "0")
+        monkeypatch.setattr(scheduler, "_fd_limit_checked", False)
+
+        scheduler._ensure_cron_fd_limit()

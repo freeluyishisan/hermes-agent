@@ -44,6 +44,51 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+_fd_limit_checked = False
+
+
+def _ensure_cron_fd_limit() -> None:
+    """Raise the scheduler process' soft fd limit for cron workloads.
+
+    macOS launchd services commonly start with RLIMIT_NOFILE soft=256 even
+    when the hard limit is much higher. A busy cron tick can briefly need more
+    descriptors than that while running several jobs in parallel, launching
+    data-collection scripts, opening SQLite handles, and creating HTTP clients.
+    Keep this best-effort so restricted platforms still run normally.
+    """
+    global _fd_limit_checked
+    if _fd_limit_checked:
+        return
+    _fd_limit_checked = True
+
+    try:
+        desired = int(os.getenv("HERMES_CRON_MIN_NOFILE", "1024") or "0")
+    except (TypeError, ValueError):
+        desired = 1024
+    if desired <= 0:
+        return
+
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft >= desired:
+            return
+        if hard == resource.RLIM_INFINITY:
+            new_soft = desired
+        else:
+            new_soft = min(desired, hard)
+        if new_soft <= soft:
+            return
+        resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+        logger.info(
+            "Raised cron RLIMIT_NOFILE soft limit from %s to %s (hard=%s)",
+            soft,
+            new_soft,
+            "unlimited" if hard == resource.RLIM_INFINITY else hard,
+        )
+    except Exception as exc:
+        logger.debug("Could not raise cron RLIMIT_NOFILE: %s", exc)
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -1630,6 +1675,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
+        _ensure_cron_fd_limit()
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
@@ -2096,6 +2142,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
+    def _close_unstarted_session_db() -> None:
+        """Close the cron SessionDB on paths that return before AIAgent owns it.
+
+        Jobs with a data-collection script can short-circuit before the agent
+        session is created (empty script output, wakeAgent=false, prompt block).
+        Those paths still constructed SessionDB above, so close it explicitly
+        rather than leaking state.db/state.db-wal fds in the long-lived gateway.
+        """
+        if _session_db:
+            try:
+                _session_db.close()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to close unused SQLite session store: %s", job_id, e)
+
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
     # the whole agent run. We pass the result into _build_job_prompt so
@@ -2116,6 +2176,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
+            _close_unstarted_session_db()
             return True, silent_doc, SILENT_MARKER, None
 
     try:
@@ -2142,9 +2203,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
+        _close_unstarted_session_db()
         return False, blocked_doc, "", str(block_exc)
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+        _close_unstarted_session_db()
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
@@ -2850,6 +2913,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         Number of jobs executed (0 if another tick is already running)
     """
     lock_dir, lock_file = _get_lock_paths()
+    _ensure_cron_fd_limit()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
