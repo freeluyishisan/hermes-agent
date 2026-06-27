@@ -75,6 +75,7 @@ import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '.
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
+import { DockBanner } from './dock-banner'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import {
   type ComposerInsertMode,
@@ -2318,6 +2319,7 @@ export function ChatBar({
                     </div>
                   </div>
                 )}
+                <DockBanner />
                 {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
                 <WindowPreviews attachments={attachments} onRemove={onRemoveAttachment} />
                 <div

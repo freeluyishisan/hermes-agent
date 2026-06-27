@@ -1615,6 +1615,8 @@ export const ja = defineLocale({
     windowPickerLoading: '開いているウィンドウを取得中…',
     windowPreviewLive: 'ライブ',
     windowPreviewUnavailable: 'プレビューを表示できません — ウィンドウが最小化または閉じられている可能性があります。',
+    dockControlling: (app: string) => `${app} を操作中`,
+    dockUndock: 'ドック解除',
     promptSnippets: 'プロンプトスニペット…',
     tipPre: 'ヒント: ',
     tipPost: ' と入力してファイルをインラインで参照。',
