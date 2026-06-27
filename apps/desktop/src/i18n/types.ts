@@ -1437,10 +1437,15 @@ export interface Translations {
       fast: string
       effort: string
       minimal: string
+      minimalDescription: string
       low: string
+      lowDescription: string
       medium: string
+      mediumDescription: string
       high: string
+      highDescription: string
       max: string
+      maxDescription: string
       updateFailed: string
       fastFailed: string
     }
