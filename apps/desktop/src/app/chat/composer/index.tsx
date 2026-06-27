@@ -118,6 +118,7 @@ import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+import { WindowPreviews } from './window-preview'
 
 const COMPOSER_STACK_BREAKPOINT_PX = 320
 
@@ -2318,6 +2319,7 @@ export function ChatBar({
                   </div>
                 )}
                 {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                <WindowPreviews attachments={attachments} onRemove={onRemoveAttachment} />
                 <div
                   className={cn(
                     'grid w-full',
