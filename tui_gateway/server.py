@@ -2926,60 +2926,13 @@ def _sync_session_key_after_compress(
 
 
 # --- quota cache for TUI (avoids HTTP on every _get_usage tick) ---
-_tui_quota_cache: dict = {}
-_tui_quota_cache_ts: float = 0
-TUI_QUOTA_CACHE_TTL = 60
-
+# Delegates to account_usage.get_quota_status_bar_data() — single source
+# of truth shared with the CLI (cli.py).
 
 def _get_tui_quota_snapshot(agent) -> dict:
     """Cached quota fetch for TUI gateway — same TTL pattern as CLI."""
-    global _tui_quota_cache, _tui_quota_cache_ts
-    now = time.monotonic()
-    if _tui_quota_cache and (now - _tui_quota_cache_ts) < TUI_QUOTA_CACHE_TTL:
-        return _tui_quota_cache
-    result: dict = {}
-    try:
-        from agent.account_usage import fetch_account_usage
-        _provider = (getattr(agent, "model", None) or "").split("/")[0]
-        _base_url = getattr(agent, "base_url", None)
-        _api_key = getattr(agent, "api_key", None)
-        normalized = (_provider or "").strip().lower()
-        if normalized not in {"openai-codex", "anthropic", "openrouter", "zai", "nous"}:
-            _host = (_base_url or "").lower()
-            if "api.z.ai" in _host or "open.bigmodel.cn" in _host:
-                normalized = "zai"
-        if normalized in {"", "auto", "custom"}:
-            normalized = None
-        snap_acc = fetch_account_usage(
-            provider=normalized or _provider,
-            base_url=_base_url,
-            api_key=_api_key,
-        )
-        if snap_acc:
-            _best = max(snap_acc, key=lambda w: w.used_percent)
-            result["quota_pct"] = round(_best.used_percent)
-            if _best.reset_at:
-                from datetime import datetime, timezone
-                _now = datetime.now(timezone.utc)
-                _reset = _best.reset_at if _best.reset_at.tzinfo else _best.reset_at.replace(tzinfo=timezone.utc)
-                _secs = max(0, (_reset - _now).total_seconds())
-                if _secs > 0:
-                    h, rem = divmod(int(_secs), 3600)
-                    m, s = divmod(rem, 60)
-                    result["quota_reset"] = f"{h}h{m}m"
-    except Exception:
-        pass
-    if "quota_pct" not in result:
-        try:
-            from agent.rate_limit_tracker import format_rate_limit_compact
-            rl = format_rate_limit_compact()
-            if rl:
-                result["quota_rl_text"] = rl
-        except Exception:
-            pass
-    _tui_quota_cache = result
-    _tui_quota_cache_ts = now
-    return result
+    from agent.account_usage import get_quota_status_bar_data
+    return get_quota_status_bar_data(agent)
 
 
 def _get_usage(agent) -> dict:

@@ -723,3 +723,69 @@ def fetch_account_usage(
     except Exception:
         return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Shared quota status-bar helper (used by CLI and TUI gateway)
+# ---------------------------------------------------------------------------
+
+_quota_sb_cache: dict = {}
+_quota_sb_cache_ts: float = 0
+_QUOTA_SB_CACHE_TTL = 60  # seconds
+
+
+def get_quota_status_bar_data(agent) -> dict:
+    """Return a dict with ``quota_pct`` / ``quota_reset`` / ``quota_rl_text``
+    suitable for status-bar rendering.  Results are cached for *TTL* seconds
+    to avoid HTTP on every render tick.
+
+    This is the single source of truth used by both ``cli.py`` and
+    ``tui_gateway/server.py``.
+    """
+    import time as _time
+
+    global _quota_sb_cache, _quota_sb_cache_ts
+    now = _time.monotonic()
+    if _quota_sb_cache and (now - _quota_sb_cache_ts) < _QUOTA_SB_CACHE_TTL:
+        return _quota_sb_cache
+
+    result: dict = {}
+    try:
+        _provider = (getattr(agent, "model", None) or "").split("/")[0]
+        _base_url = getattr(agent, "base_url", None)
+        _api_key = getattr(agent, "api_key", None)
+        snap_acc = fetch_account_usage(
+            provider=_provider,
+            base_url=_base_url,
+            api_key=_api_key,
+        )
+        if snap_acc and snap_acc.windows:
+            best_w = max(snap_acc.windows, key=lambda w: w.used_percent or 0)
+            result["quota_pct"] = round(best_w.used_percent) if best_w.used_percent is not None else None
+            if best_w.reset_at:
+                from datetime import datetime, timezone
+                _now = datetime.now(timezone.utc)
+                _reset = best_w.reset_at if best_w.reset_at.tzinfo else best_w.reset_at.replace(tzinfo=timezone.utc)
+                _secs = max(0, (_reset - _now).total_seconds())
+                if _secs > 0:
+                    h, rem = divmod(int(_secs), 3600)
+                    m, s = divmod(rem, 60)
+                    result["quota_reset"] = f"{h}h{m}m"
+            else:
+                result["quota_reset"] = "see /usage"
+    except Exception:
+        pass
+
+    # Fallback: rate-limit headers from last response
+    if "quota_pct" not in result:
+        try:
+            from agent.rate_limit_tracker import format_rate_limit_compact
+            rl = format_rate_limit_compact()
+            if rl:
+                result["quota_rl_text"] = rl
+        except Exception:
+            pass
+
+    _quota_sb_cache = result
+    _quota_sb_cache_ts = now
+    return result
