@@ -1258,9 +1258,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
                 raise
 
         # ``onexc`` was added in 3.12; fall back to ``onerror`` on 3.11.
-        try:
+        import sys
+    
+        if sys.version_info >= (3, 12):
             shutil.rmtree(profile_dir, onexc=_make_writable)
-        except TypeError:
+        else:
             shutil.rmtree(profile_dir, onerror=_make_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
