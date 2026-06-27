@@ -28,6 +28,25 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
+
+
+def _has_aggregator_profile(provider: str | None) -> bool:
+    """Return True when *provider* has a registered ProviderProfile
+    that forwards ``provider_preferences`` via ``build_extra_body()``.
+
+    This lets aggregators like OpenRouter and Polza receive routing
+    preferences on auxiliary calls (summary, compression, vision)
+    without hardcoding every aggregator name.
+    """
+    if not provider:
+        return False
+    try:
+        from providers import get_provider_profile
+        pp = get_provider_profile(provider)
+        return pp is not None
+    except Exception:
+        return False
+
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
@@ -1451,6 +1470,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
 
             # Include provider routing preferences
+            # Forward to any profiled aggregator (OpenRouter, Polza, …),
+            # not only hardcoded openrouter.
             provider_preferences = {}
             if agent.providers_allowed:
                 provider_preferences["only"] = agent.providers_allowed
@@ -1463,6 +1484,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if provider_preferences and (
                 (agent.provider or "").strip().lower() == "openrouter"
                 or agent._is_openrouter_url()
+                or _has_aggregator_profile(agent.provider)
             ):
                 summary_extra_body["provider"] = provider_preferences
 
