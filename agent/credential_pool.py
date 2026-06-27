@@ -1863,11 +1863,23 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # Copilot tokens are resolved dynamically via `gh auth token` or
         # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.
+        #
+        # We validate the token at seed time by performing the Copilot token
+        # exchange (GET /copilot_internal/v2/token).  If the exchange fails
+        # (e.g. the gh auth token lacks Copilot scope), we skip seeding rather
+        # than surfacing a dead picker entry that silently falls back to the
+        # default provider on use.  Fixes #49002.
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
+            from hermes_cli.copilot_auth import resolve_copilot_token, exchange_copilot_token
             token, source = resolve_copilot_token()
             if token:
-                api_token = get_copilot_api_token(token)
+                try:
+                    api_token, _ = exchange_copilot_token(token)
+                except Exception:
+                    logger.debug(
+                        "Copilot token exchange failed for %s — skipping auto-seed", source
+                    )
+                    raise  # re-raise to outer except, skip seeding
                 source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
