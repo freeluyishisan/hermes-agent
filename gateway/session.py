@@ -1059,9 +1059,24 @@ class SessionStore:
                     # the NEXT successful turn completes (not here), which
                     # means a re-interrupted retry keeps trying — the
                     # stuck-loop counter handles terminal escalation.
-                    entry.updated_at = now
-                    self._save()
-                    return entry
+                    #
+                    # Freshness gate: if the session has been pending
+                    # resume longer than the auto-continue freshness
+                    # window, treat it as a zombie — the recovery turn
+                    # either never ran or failed and the stale transcript
+                    # would pollute the context (#46934).
+                    _ref_time = entry.last_resume_marked_at or entry.updated_at
+                    _fw_raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
+                    try:
+                        _fw = float(_fw_raw) if _fw_raw else 3600.0
+                    except (TypeError, ValueError):
+                        _fw = 3600.0
+                    if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
+                        reset_reason = "resume_pending_expired"
+                    else:
+                        entry.updated_at = now
+                        self._save()
+                        return entry
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
