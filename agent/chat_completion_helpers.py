@@ -1782,6 +1782,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
+    first_stream_event_seen = {"yes": False}
     # Wall-clock timestamp of the last real streaming chunk.  The outer
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
@@ -1870,6 +1871,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 api_kwargs=stream_kwargs,
             )
         )
+        first_stream_event_seen["yes"] = False
         # Reset stale-stream timer so the detector measures from this
         # attempt's start, not a previous attempt's last chunk.
         last_chunk_time["t"] = time.time()
@@ -1909,6 +1911,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         reasoning_parts: list = []
         usage_obj = None
         for chunk in stream:
+            first_stream_event_seen["yes"] = True
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
 
@@ -2591,6 +2594,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _reasoning_floor is not None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
+    # Generic chat-completions first-event watchdog. Only enable it when the
+    # agent actually has fallback providers to escape to; otherwise a slow but
+    # healthy upstream would be penalized with no alternate route available.
+    _stream_ttfb_enabled = (
+        getattr(agent, "api_mode", None) not in {"codex_responses", "anthropic_messages"}
+        and bool(getattr(agent, "_fallback_chain", []))
+        and not (agent.base_url and is_local_endpoint(agent.base_url))
+    )
+    _stream_ttfb_timeout = _env_float("HERMES_STREAM_TTFB_TIMEOUT_SECONDS", 30.0)
+    if _stream_ttfb_timeout <= 0:
+        _stream_ttfb_enabled = False
+
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()
@@ -2618,6 +2633,36 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # but delivering no real chunks.  Kill the client so the
         # inner retry loop can start a fresh connection.
         _stale_elapsed = time.time() - last_chunk_time["t"]
+        if (
+            _stream_ttfb_enabled
+            and not first_stream_event_seen["yes"]
+            and _stale_elapsed > _stream_ttfb_timeout
+        ):
+            logger.warning(
+                "Streaming provider emitted no events within %.0fs "
+                "(threshold %.0fs, provider=%s, model=%s). Killing "
+                "connection so retries/fallback can continue.",
+                _stale_elapsed,
+                _stream_ttfb_timeout,
+                agent.provider or "unknown",
+                api_kwargs.get("model", "unknown"),
+            )
+            agent._buffer_status(
+                f"⚠️ No stream events from provider in {int(_stale_elapsed)}s "
+                f"(model: {api_kwargs.get('model', 'unknown')}). Reconnecting."
+            )
+            try:
+                _close_request_client_once("stream_ttfb_kill")
+            except Exception:
+                pass
+            try:
+                agent._replace_primary_openai_client(reason="stream_ttfb_pool_cleanup")
+            except Exception:
+                pass
+            last_chunk_time["t"] = time.time()
+            agent._touch_activity(
+                f"stream killed after {int(_stale_elapsed)}s with no first event"
+            )
         if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             logger.warning(
