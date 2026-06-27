@@ -49,3 +49,46 @@ class TestCredentialExclusion:
         assert any("SOUL.md" in n for n in names), "SOUL.md should be in export"
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
+
+    def test_named_profile_export_state_db_omits_session_model_api_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Persisted /model overrides in state.db must not leak API keys."""
+        from hermes_state import SessionDB
+
+        profiles_root = tmp_path / "profiles"
+        profile_dir = profiles_root / "testprofile"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("model: gpt-5.4\n")
+
+        secret = "sk-live-session-secret"
+        db = SessionDB(db_path=profile_dir / "state.db")
+        try:
+            db.set_gateway_session_model_override(
+                "agent:main:telegram:dm:273403055:351260",
+                {
+                    "model": "gpt-5.5",
+                    "provider": "openai-codex",
+                    "api_key": secret,
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "api_mode": "codex_responses",
+                },
+            )
+        finally:
+            db.close()
+
+        monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: profiles_root)
+        monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda n: profile_dir)
+        monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
+
+        output = tmp_path / "export.tar.gz"
+        result = export_profile("testprofile", str(output))
+
+        with tarfile.open(result, "r:gz") as tf:
+            state_member = next(m for m in tf.getmembers() if m.name.endswith("/state.db"))
+            extracted = tf.extractfile(state_member)
+            assert extracted is not None
+            state_bytes = extracted.read()
+
+        assert secret.encode() not in state_bytes
+        assert b"api_key" not in state_bytes
