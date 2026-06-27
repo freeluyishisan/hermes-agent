@@ -118,6 +118,11 @@ const {
   resolveRequestedPathForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const {
+  applyWindowState,
+  loadState,
+  trackWindowState
+} = require('./window-state.cjs')
 
 let nodePty = null
 let nodePtyDir = null
@@ -5836,6 +5841,9 @@ function createWindow() {
     webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
   })
 
+  // Restore saved window position/size and defer maximize until ready-to-show.
+  applyWindowState(mainWindow, userDataPath)
+
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
     if (icon) {
@@ -5877,6 +5885,9 @@ function createWindow() {
   mainWindow.on('closed', () => closePetOverlay())
 
   wireCommonWindowHandlers(mainWindow)
+
+  // Persist window geometry on maximize/unmaximize/resize/move/close.
+  trackWindowState(mainWindow, userDataPath, 'main')
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
