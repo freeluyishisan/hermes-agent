@@ -61,6 +61,61 @@ INDEX_CACHE_TTL = 3600  # 1 hour
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
 
+_TEXT_SKILL_FILE_EXTENSIONS = {
+    "",
+    ".adoc",
+    ".cfg",
+    ".conf",
+    ".css",
+    ".csv",
+    ".env",
+    ".gitignore",
+    ".htm",
+    ".html",
+    ".ini",
+    ".jinja",
+    ".jinja2",
+    ".js",
+    ".json",
+    ".jsonl",
+    ".jsx",
+    ".lock",
+    ".lua",
+    ".md",
+    ".mdx",
+    ".py",
+    ".rb",
+    ".rst",
+    ".sh",
+    ".sql",
+    ".svg",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
+_TEXT_CONTENT_TYPES = (
+    "text/",
+    "application/json",
+    "application/javascript",
+    "application/x-yaml",
+    "application/xml",
+    "application/yaml",
+)
+
+
+def _is_probably_text_skill_file(path: str, content_type: str = "") -> bool:
+    """Return True for skill files that should be decoded as UTF-8 text."""
+    suffix = Path(path).suffix.lower()
+    if suffix in _TEXT_SKILL_FILE_EXTENSIONS:
+        return True
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return any(media_type.startswith(prefix) for prefix in _TEXT_CONTENT_TYPES)
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -564,7 +619,7 @@ class GitHubSource(SkillSource):
         skill_md_path = f"{skill_path}/SKILL.md"
 
         content = self._fetch_file_content(repo, skill_md_path)
-        if not content:
+        if not content or isinstance(content, bytes):
             return None
 
         fm = self._parse_frontmatter_quick(content)
@@ -786,8 +841,8 @@ class GitHubSource(SkillSource):
         return last_resp
 
 
-    def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
-        """Recursively download all text files from a GitHub directory.
+    def _download_directory(self, repo: str, path: str) -> Dict[str, Union[str, bytes]]:
+        """Recursively download all files from a GitHub directory.
 
         Uses the Git Trees API first (single call for the entire tree) to
         avoid per-directory rate limiting that causes silent subdirectory
@@ -800,7 +855,7 @@ class GitHubSource(SkillSource):
         logger.debug("Tree API unavailable for %s/%s, falling back to Contents API", repo, path)
         return self._download_directory_recursive(repo, path)
 
-    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
+    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, Union[str, bytes]]]:
         """Download an entire directory using the Git Trees API (single request).
 
         Returns:
@@ -827,7 +882,7 @@ class GitHubSource(SkillSource):
             return {}
 
         # Filter to blobs under our target path and fetch content
-        files: Dict[str, str] = {}
+        files: Dict[str, Union[str, bytes]] = {}
         for item in tree_entries:
             if item.get("type") != "blob":
                 continue
@@ -843,7 +898,7 @@ class GitHubSource(SkillSource):
 
         return files if files else None
 
-    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, str]:
+    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, Union[str, bytes]]:
         """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         try:
@@ -858,7 +913,7 @@ class GitHubSource(SkillSource):
         if not isinstance(entries, list):
             return {}
 
-        files: Dict[str, str] = {}
+        files: Dict[str, Union[str, bytes]] = {}
         for entry in entries:
             name = entry.get("name", "")
             entry_type = entry.get("type", "")
@@ -903,16 +958,23 @@ class GitHubSource(SkillSource):
 
         return None
 
-    def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
-        """Fetch a single file's content from GitHub."""
+    def _fetch_file_content(self, repo: str, path: str) -> Optional[Union[str, bytes]]:
+        """Fetch a single file's content from GitHub, preserving binary bytes."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         resp = self._github_get(
             url,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
-        if resp is not None and resp.status_code == 200:
-            return resp.text
-        return None
+        if resp is None or resp.status_code != 200:
+            return None
+
+        content_type = resp.headers.get("content-type", "")
+        if _is_probably_text_skill_file(path, content_type):
+            try:
+                return resp.content.decode(resp.encoding or "utf-8")
+            except UnicodeDecodeError:
+                return resp.content
+        return resp.content
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:
         """Fetch and parse the repo-root ``skills.sh.json`` grouping sidecar.
@@ -935,7 +997,11 @@ class GitHubSource(SkillSource):
             return self._skillsh_groupings[repo]
 
         content = self._fetch_file_content(repo, "skills.sh.json")
-        groupings = self._parse_skillsh_groupings(content) if content else None
+        groupings = (
+            self._parse_skillsh_groupings(content)
+            if content and not isinstance(content, bytes)
+            else None
+        )
         self._skillsh_groupings[repo] = groupings
         return groupings
 
