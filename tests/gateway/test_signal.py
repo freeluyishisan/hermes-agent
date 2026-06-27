@@ -99,7 +99,54 @@ class TestSignalAdapterInit:
 
     def test_self_message_filtering(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
-        assert adapter._account_normalized == "+15551234567"
+        assert adapter._account_normalized == adapter.account
+
+    def test_track_sent_timestamp_accepts_signal_cli_result_lists(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        adapter._track_sent_timestamp([
+            {"recipientAddress": {"number": "+155****0000"}, "timestamp": 1234567890},
+            {"timestamp": 1234567891},
+        ], "+155****0000", "Verstanden.")
+
+        assert 1234567890 in adapter._recent_sent_timestamps
+        assert 1234567891 in adapter._recent_sent_timestamps
+        assert adapter._is_recent_sent_text("+155****0000", "Verstanden.") is True
+        assert adapter._is_recent_sent_text("+155****9999", "Verstanden.") is False
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_ignores_recent_outbound_text_echo(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_text("+155****1111", "Verstanden.")
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceName": "Alice",
+                "timestamp": 1000000000,
+                "dataMessage": {"message": "Verstanden."},
+            }
+        })
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recent_outbound_text_echo_is_scoped_to_chat(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_text("+155****1111", "Verstanden.")
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****2222",
+                "sourceName": "Bob",
+                "timestamp": 1000000001,
+                "dataMessage": {"message": "Verstanden."},
+            }
+        })
+
+        adapter.handle_message.assert_awaited_once()
 
 
 class TestSignalConnectCleanup:
@@ -1069,6 +1116,30 @@ class TestSignalStreamingCapabilities:
 
 class TestSignalSendReturnsMessageId:
     """Signal send() should not pretend sent messages are editable."""
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_long_text_before_calling_signal_cli(self, monkeypatch):
+        from gateway.platforms.signal import MAX_MESSAGE_LENGTH
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        long_content = ("A" * MAX_MESSAGE_LENGTH) + ("B" * 200)
+
+        result = await adapter.send(chat_id="group:test-group", content=long_content)
+
+        assert result.success is True
+        assert len(captured) >= 2
+        assert all(call["method"] == "send" for call in captured)
+        assert all(call["params"]["groupId"] == "test-group" for call in captured)
+        messages = [call["params"]["message"] for call in captured]
+        assert all(len(message) <= MAX_MESSAGE_LENGTH for message in messages)
+        assert "".join(messages).startswith("A" * 100)
+        assert "B" * 100 in "".join(messages)
+        assert all("textStyle" not in call["params"] for call in captured)
+        assert all("textStyles" not in call["params"] for call in captured)
+        assert adapter._is_recent_sent_text("group:test-group", messages[-1]) is True
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
