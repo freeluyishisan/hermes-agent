@@ -80,6 +80,9 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
 
     tokens = server._set_session_context(session_key)
     try:
+        from gateway.session_context import get_session_env
+
+        assert get_session_env("HERMES_SESSION_ID") == session_key
         assert resolve_agent_cwd() == project
     finally:
         server._clear_session_context(tokens)
@@ -143,6 +146,9 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
 
     tokens = server._set_session_context("bg_deadbe", cwd=str(project))
     try:
+        from gateway.session_context import get_session_env
+
+        assert get_session_env("HERMES_SESSION_ID") == "bg_deadbe"
         assert resolve_agent_cwd() == project
     finally:
         server._clear_session_context(tokens)

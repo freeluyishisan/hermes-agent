@@ -21,6 +21,11 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agent.provider_client_identity import (
+    build_zai_sync_http_client,
+    is_zai_endpoint,
+    merge_zai_opencode_headers,
+)
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
@@ -697,6 +702,20 @@ def _build_anthropic_client_with_bearer_hook(
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+def _apply_zai_anthropic_identity(kwargs: Dict[str, Any], base_url: str | None) -> None:
+    """Layer Z.ai OpenCode identity onto an Anthropic-compatible client."""
+    if not is_zai_endpoint(base_url):
+        return
+    headers = merge_zai_opencode_headers(base_url, kwargs.get("default_headers"))
+    if headers:
+        kwargs["default_headers"] = headers
+    if "http_client" not in kwargs:
+        client_kwargs: Dict[str, Any] = {}
+        if "timeout" in kwargs:
+            client_kwargs["timeout"] = kwargs["timeout"]
+        kwargs["http_client"] = build_zai_sync_http_client(**client_kwargs)
+
+
 def build_anthropic_client(
     api_key,
     base_url: str = None,
@@ -817,6 +836,7 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _apply_zai_anthropic_identity(kwargs, normalized_base_url)
     return _anthropic_sdk.Anthropic(**kwargs)
 
 

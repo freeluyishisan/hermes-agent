@@ -217,7 +217,7 @@ def test_session_id_set_via_contextvars(monkeypatch):
 
 
 def test_set_session_env_includes_session_key():
-    """_set_session_env should propagate session_key from SessionContext."""
+    """_set_session_env should propagate session identifiers from SessionContext."""
     runner = object.__new__(GatewayRunner)
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -231,17 +231,20 @@ def test_set_session_env_includes_session_key():
         connected_platforms=[],
         home_channels={},
         session_key="tg:-1001:17585",
+        session_id="session-abc123",
     )
 
     # Capture baseline value before setting (may be non-empty from another
     # test in the same pytest-xdist worker sharing the context).
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
+    assert get_session_env("HERMES_SESSION_ID") == "session-abc123"
     runner._clear_session_env(tokens)
     # After clearing, the session key must not retain the value we just set.
     # The exact post-clear value depends on context propagation from other
     # tests, so only check that our value was removed, not what replaced it.
     assert get_session_env("HERMES_SESSION_KEY") != "tg:-1001:17585"
+    assert get_session_env("HERMES_SESSION_ID") != "session-abc123"
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):

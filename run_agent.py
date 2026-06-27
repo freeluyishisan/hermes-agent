@@ -3602,6 +3602,10 @@ class AIAgent:
         try:
             import httpx as _httpx
             import socket as _socket
+            from agent.provider_client_identity import (
+                build_zai_sync_http_client,
+                is_zai_endpoint,
+            )
 
             if "api.githubcopilot.com" in str(base_url or "").lower():
                 return _httpx.Client()
@@ -3618,10 +3622,13 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
-            return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
-                proxy=_proxy,
-            )
+            _client_kwargs = {
+                "transport": _httpx.HTTPTransport(socket_options=_sock_opts),
+                "proxy": _proxy,
+            }
+            if is_zai_endpoint(base_url):
+                return build_zai_sync_http_client(**_client_kwargs)
+            return _httpx.Client(**_client_kwargs)
         except Exception:
             return None
 
@@ -4020,27 +4027,32 @@ class AIAgent:
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
             self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "portal.qwen.ai"):
-            self._client_kwargs["default_headers"] = _qwen_portal_headers()
-        elif base_url_host_matches(base_url, "chatgpt.com"):
-            from agent.auxiliary_client import _codex_cloudflare_headers
-            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
-                self._client_kwargs.get("api_key", "")
-            )
         else:
-            # No URL-specific headers — check profile.default_headers before clearing.
-            _ph_headers = None
-            try:
-                from providers import get_provider_profile as _gpf2
-                _ph2 = _gpf2(self.provider)
-                if _ph2 and _ph2.default_headers:
-                    _ph_headers = dict(_ph2.default_headers)
-            except Exception:
-                pass
-            if _ph_headers:
-                self._client_kwargs["default_headers"] = _ph_headers
+            from agent.provider_client_identity import is_zai_endpoint, zai_opencode_headers
+
+            if is_zai_endpoint(base_url):
+                self._client_kwargs["default_headers"] = zai_opencode_headers()
+            elif base_url_host_matches(base_url, "portal.qwen.ai"):
+                self._client_kwargs["default_headers"] = _qwen_portal_headers()
+            elif base_url_host_matches(base_url, "chatgpt.com"):
+                from agent.auxiliary_client import _codex_cloudflare_headers
+                self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
+                    self._client_kwargs.get("api_key", "")
+                )
             else:
-                self._client_kwargs.pop("default_headers", None)
+                # No URL-specific headers — check profile.default_headers before clearing.
+                _ph_headers = None
+                try:
+                    from providers import get_provider_profile as _gpf2
+                    _ph2 = _gpf2(self.provider)
+                    if _ph2 and _ph2.default_headers:
+                        _ph_headers = dict(_ph2.default_headers)
+                except Exception:
+                    pass
+                if _ph_headers:
+                    self._client_kwargs["default_headers"] = _ph_headers
+                else:
+                    self._client_kwargs.pop("default_headers", None)
 
         # User-configured overrides win over URL/profile defaults — keep them
         # applied across credential swaps and client rebuilds, not just at

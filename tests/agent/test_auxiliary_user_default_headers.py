@@ -40,6 +40,15 @@ class TestApplyUserDefaultHeadersHelper:
         assert merged["User-Agent"] == "curl/8.7.1"  # user wins
         assert merged["X-Extra"] == "1"
 
+    def test_lowercase_user_agent_override_keeps_canonical_key(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "m", "default_headers": {"user-agent": "curl/8.7.1"}},
+        })
+        from agent.auxiliary_client import _apply_user_default_headers
+        merged = _apply_user_default_headers({"User-Agent": "OpenAI/Python 2.24.0"})
+        assert merged["User-Agent"] == "curl/8.7.1"
+        assert "user-agent" not in merged
+
     def test_no_config_is_noop_returns_original(self, tmp_path):
         _write_config(tmp_path, {"model": {"default": "m"}})
         from agent.auxiliary_client import _apply_user_default_headers

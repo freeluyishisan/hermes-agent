@@ -626,6 +626,25 @@ def init_agent(
     # same image history.
     agent._anthropic_image_fallback_cache: Dict[str, str] = {}
 
+    # Session identity is initialized before LLM client construction so setup
+    # hooks see a consistent local session context. Provider identity helpers
+    # must not send this value to third parties unless a user explicitly opts in.
+    agent.session_start = datetime.now()
+    if session_id:
+        agent.session_id = session_id
+    else:
+        timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        agent.session_id = f"{timestamp_str}_{short_uuid}"
+    agent._parent_session_id = parent_session_id
+
+    try:
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(agent.session_id)
+    except Exception:
+        os.environ["HERMES_SESSION_ID"] = agent.session_id
+
     # Initialize LLM client via centralized provider router.
     # The router handles auth resolution, base URL, headers, and
     # Codex/Anthropic wrapping for all known providers.
@@ -796,22 +815,27 @@ def init_agent(
                 client_kwargs["default_headers"] = {
                     "User-Agent": "claude-code/0.1.0",
                 }
-            elif base_url_host_matches(effective_base, "portal.qwen.ai"):
-                client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
-            elif base_url_host_matches(effective_base, "chatgpt.com"):
-                from agent.auxiliary_client import _codex_cloudflare_headers
-                client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
-            elif "default_headers" not in client_kwargs:
-                # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
-                # endpoints).
-                try:
-                    from providers import get_provider_profile as _gpf
-                    _ph = _gpf(agent.provider)
-                    if _ph and _ph.default_headers:
-                        client_kwargs["default_headers"] = dict(_ph.default_headers)
-                except Exception:
-                    pass
+            else:
+                from agent.provider_client_identity import is_zai_endpoint, zai_opencode_headers
+
+                if is_zai_endpoint(effective_base):
+                    client_kwargs["default_headers"] = zai_opencode_headers()
+                elif base_url_host_matches(effective_base, "portal.qwen.ai"):
+                    client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
+                elif base_url_host_matches(effective_base, "chatgpt.com"):
+                    from agent.auxiliary_client import _codex_cloudflare_headers
+                    client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+                elif "default_headers" not in client_kwargs:
+                    # Fall back to profile.default_headers for providers that
+                    # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
+                    # endpoints).
+                    try:
+                        from providers import get_provider_profile as _gpf
+                        _ph = _gpf(agent.provider)
+                        if _ph and _ph.default_headers:
+                            client_kwargs["default_headers"] = dict(_ph.default_headers)
+                    except Exception:
+                        pass
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client
@@ -1052,17 +1076,9 @@ def init_agent(
             source = "Claude via OpenRouter"
         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
     
-    # Session logging setup - auto-save conversation trajectories for debugging
-    agent.session_start = datetime.now()
-    if session_id:
-        # Use provided session ID (e.g., from CLI)
-        agent.session_id = session_id
-    else:
-        # Generate a new session ID
-        timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
-        short_uuid = uuid.uuid4().hex[:6]
-        agent.session_id = f"{timestamp_str}_{short_uuid}"
-
+    # Session logging setup - auto-save conversation trajectories for debugging.
+    # The id is initialized before LLM client construction; keep the existing
+    # exposure paths synchronized for tools and local session bookkeeping.
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
     # coordination, and logging. Keep the ContextVar and os.environ
@@ -1118,7 +1134,6 @@ def init_agent(
     
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
-    agent._parent_session_id = parent_session_id
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
     # Most agents own their session row and should finalize it on close().
