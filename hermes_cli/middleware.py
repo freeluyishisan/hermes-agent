@@ -231,10 +231,24 @@ def _has_middleware(kind: str) -> bool:
     return has_middleware(kind)
 
 
+_middleware_fallback_warned = False
+
+
 def _get_middleware_callbacks(kind: str) -> List[Callable]:
     from hermes_cli.plugins import get_plugin_manager
+    global _middleware_fallback_warned
 
-    return list(get_plugin_manager()._middleware.get(kind, []))
+    manager = get_plugin_manager()
+    # Defensive: _middleware may not exist if PluginManager is deserialized
+    # from pickle or under certain race conditions. Use getattr with fallback.
+    middleware = getattr(manager, "_middleware", {})
+    if not middleware and not _middleware_fallback_warned:
+        _middleware_fallback_warned = True
+        logger.warning(
+            "PluginManager missing _middleware (deserialized or race condition). "
+            "Middleware callbacks may be inactive. This warning is logged once per session."
+        )
+    return list(middleware.get(kind, []))
 
 
 def _run_execution_chain(
