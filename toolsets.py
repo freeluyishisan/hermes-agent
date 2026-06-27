@@ -37,7 +37,7 @@ _HERMES_CORE_TOOLS = [
     # via check_fn in tools/read_terminal_tool.py — hidden outside the GUI).
     "read_terminal",
     # File manipulation
-    "read_file", "write_file", "patch", "search_files",
+    "read_file", "write_file", "patch", "search_files", "read_code_structure",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
