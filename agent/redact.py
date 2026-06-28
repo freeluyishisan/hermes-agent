@@ -104,6 +104,7 @@ _PREFIX_PATTERNS = [
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
+    r"pat-na1-[A-Za-z0-9-]{10,}",       # HubSpot private app token
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
 ]
 

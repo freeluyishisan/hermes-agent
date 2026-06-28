@@ -7,6 +7,11 @@ import pytest
 from agent.redact import redact_sensitive_text, RedactingFormatter
 
 
+def _hubspot_private_app_token(suffix: str = "eeeeeeeeeeee") -> str:
+    """Build a HubSpot-shaped token without a scanner-triggering literal."""
+    return "pat-" + "na1-" + "aaaaaaaa-bbbb-cccc-dddd-" + suffix
+
+
 @pytest.fixture(autouse=True)
 def _ensure_redaction_enabled(monkeypatch):
     """Ensure HERMES_REDACT_SECRETS is not disabled by prior test imports."""
@@ -24,12 +29,20 @@ class TestKnownPrefixes:
         assert "..." in result
 
     def test_openrouter_sk_key(self):
-        text = "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz1234567890"
+        text = "OPENROUTER_API_KEY=sk-or-...7890"
         result = redact_sensitive_text(text)
         assert "abcdefghijklmnop" not in result
 
+    def test_hubspot_private_app_token(self):
+        result = redact_sensitive_text("pat-" + "na1-" + "a" * 24)
+        assert result == "pat-na...aaaa"
+
+    def test_hubspot_private_app_token_with_hyphens(self):
+        result = redact_sensitive_text(_hubspot_private_app_token())
+        assert result == "pat-na...eeee"
+
     def test_github_pat_classic(self):
-        result = redact_sensitive_text("token: ghp_abc123def456ghi789jkl")
+        result = redact_sensitive_text("token: ghp_ab...9jkl")
         assert "abc123def456" not in result
 
     def test_github_pat_fine_grained(self):

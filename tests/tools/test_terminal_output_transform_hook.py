@@ -10,6 +10,11 @@ import tools.terminal_tool as terminal_tool_module
 _UNSET = object()
 
 
+def _hubspot_private_app_token() -> str:
+    """Build a HubSpot-shaped token without a scanner-triggering literal."""
+    return "pat-" + "na1-" + "aaaaaaaa-bbbb-cccc-dddd-" + "eeeeeeeeeeee"
+
+
 def _make_env_config(tmp_path, **overrides):
     config = {
         "env_type": "local",
@@ -131,6 +136,44 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     assert secret not in result["output"]
     assert "OPENAI_API_KEY=" in result["output"]
     assert "***" in result["output"]
+
+
+def test_terminal_output_redacts_bare_secret_env_values(monkeypatch, tmp_path):
+    # Regression: #43025. `echo $HUBSPOT_SERVICE_KEY` emits only the raw
+    # dotenv/env value, so KEY=value redaction cannot infer the variable name
+    # from terminal stdout. The redactor must still mask secret env values.
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    secret = _hubspot_private_app_token()
+    monkeypatch.setenv("HUBSPOT_SERVICE_KEY", secret)
+
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output=f"{secret}\n",
+        command="echo $HUBSPOT_SERVICE_KEY",
+    )
+
+    assert secret not in result["output"]
+    assert result["output"] == "pat-na...eeee"
+
+
+def test_terminal_output_redacts_before_truncation(monkeypatch, tmp_path):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: 60)
+    secret = "opaque-secret-value-1234567890"
+    monkeypatch.setenv("HUBSPOT_SERVICE_KEY", secret)
+
+    output = "A" * 18 + secret + "B" * 18
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output=output,
+        command="printf '%s' \"$HUBSPOT_SERVICE_KEY\"",
+    )
+
+    assert secret not in result["output"]
+    assert "opaque-secret" not in result["output"]
+    assert "opaque...7890" in result["output"]
 
 
 def test_terminal_output_transform_hook_exception_falls_back(monkeypatch, tmp_path):
