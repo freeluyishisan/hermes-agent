@@ -460,6 +460,29 @@ def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: 
     return json.dumps({"success": True, "message": f"Role {role_id} added to user {user_id}."})
 
 
+def _rename_thread(token: str, channel_id: str, name: str, **_kwargs: Any) -> str:
+    """Rename a thread (or channel).
+
+    Probes the channel type first — only proceeds for thread types (10/11/12)
+    to guard against accidentally renaming a regular text channel.
+    """
+    # Probe channel type before renaming
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    ch_type = channel.get("type")
+    # Thread types: 10 (NEWS_THREAD), 11 (PUBLIC_THREAD), 12 (PRIVATE_THREAD)
+    if ch_type not in (10, 11, 12):
+        return json.dumps({
+            "success": False,
+            "error": f"Channel {channel_id} is type {ch_type}, not a thread — refusing to rename.",
+        })
+    _discord_request("PATCH", f"/channels/{channel_id}", token, body={"name": name})
+    return json.dumps({
+        "success": True,
+        "channel_id": channel_id,
+        "new_name": name,
+    })
+
+
 def _remove_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Remove a role from a guild member."""
     _discord_request("DELETE", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -484,11 +507,12 @@ _ACTIONS = {
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
+    "rename_thread": _rename_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "rename_thread"})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -511,6 +535,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("rename_thread", "(channel_id, name)", "rename a thread; refuses non-thread channels"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -532,6 +557,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "rename_thread": ["channel_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
