@@ -6132,7 +6132,7 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
         try:
             return status_fn()
         except Exception as e:
-            return {"logged_in": False, "error": str(e)}
+            return {"logged_in": False, "error": _safe_oauth_error_message(e)}
     try:
         from hermes_cli import auth as hauth
         if provider_id == "nous":
@@ -6216,8 +6216,23 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
             }
     except Exception as e:
-        return {"logged_in": False, "error": str(e)}
+        return {"logged_in": False, "error": _safe_oauth_error_message(e)}
     return {"logged_in": False}
+
+
+def _safe_oauth_error_message(exc: Exception) -> str:
+    """Return an OAuth error string that is safe for dashboard API responses."""
+    try:
+        from agent.redact import redact_sensitive_text
+        redacted = redact_sensitive_text(str(exc), force=True)
+        return re.sub(
+            r"\b((?:access|refresh|id)?_?token|api_?key|client_secret|secret|password|key)\s*=\s*([^\s,;]+)",
+            r"\1=***",
+            redacted,
+            flags=re.IGNORECASE,
+        )
+    except Exception:
+        return "OAuth provider error"
 
 
 def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str]:
@@ -6415,7 +6430,7 @@ async def disconnect_oauth_provider(
             return {"ok": bool(cleared), "provider": provider_id}
         except Exception as e:
             _log.exception("disconnect %s failed", provider_id)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=_safe_oauth_error_message(e))
 
 
 # ---------------------------------------------------------------------------
@@ -7170,7 +7185,7 @@ def _nous_poller(session_id: str) -> None:
         _log.warning("nous device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = str(e)
+            sess["error_message"] = _safe_oauth_error_message(e)
 
 
 def _minimax_poller(session_id: str) -> None:
@@ -7254,7 +7269,7 @@ def _minimax_poller(session_id: str) -> None:
         _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = str(e)
+            sess["error_message"] = _safe_oauth_error_message(e)
 
 
 def _codex_full_login_worker(session_id: str) -> None:
@@ -7373,7 +7388,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             s = _oauth_sessions.get(session_id)
             if s:
                 s["status"] = "error"
-                s["error_message"] = str(e)
+                s["error_message"] = _safe_oauth_error_message(e)
 
 
 @app.post("/api/providers/oauth/{provider_id}/start")
@@ -7414,7 +7429,7 @@ async def start_oauth_login(
         raise
     except Exception as e:
         _log.exception("oauth/start %s failed", provider_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_safe_oauth_error_message(e))
     raise HTTPException(status_code=400, detail="Unsupported flow")
 
 
