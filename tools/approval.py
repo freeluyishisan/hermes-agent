@@ -331,16 +331,93 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+_SHELL_CONSTRUCTED_COMMAND_NAMES = (
+    "chmod",
+    "chown",
+    "dd",
+    "docker",
+    "gateway",
+    "halt",
+    "hermes",
+    "init",
+    "kill",
+    "killall",
+    "mkfs",
+    "pkill",
+    "poweroff",
+    "reboot",
+    "rm",
+    "shutdown",
+    "systemctl",
+    "telinit",
+)
+_SHELL_CONSTRUCTED_COMMAND_ALTERNATION = "|".join(
+    re.escape(name) for name in _SHELL_CONSTRUCTED_COMMAND_NAMES
+)
+_SHELL_ECHO_COMMAND_RE = re.compile(
+    rf"\$\(\s*echo\s+(?P<paren>{_SHELL_CONSTRUCTED_COMMAND_ALTERNATION})\s*\)"
+    rf"|`\s*echo\s+(?P<backtick>{_SHELL_CONSTRUCTED_COMMAND_ALTERNATION})\s*`",
+    _RE_FLAGS,
+)
+_PARAMETER_EXPANSION_COMMANDS = {
+    **{name: name for name in _SHELL_CONSTRUCTED_COMMAND_NAMES},
+    "hmod": "chmod",
+    "m": "rm",
+    "own": "chown",
+}
+_PARAMETER_COMMAND_RE = re.compile(
+    r"\$\{[^}\n]*\}(?P<suffix>"
+    + "|".join(re.escape(suffix) for suffix in _PARAMETER_EXPANSION_COMMANDS)
+    + r")(?=\s|$)",
+    _RE_FLAGS,
+)
+
+
+def _shell_constructed_command_candidates(command: str) -> list[str]:
+    """Return limited shell-expanded command-name candidates for detection.
+
+    This intentionally handles only the issue #36846 bypass forms that build a
+    command name from literal shell syntax. It does not try to evaluate general
+    shell code; decoded candidates are fed back through the existing blocklists.
+    """
+
+    def _replace_echo_command(match: re.Match) -> str:
+        return (match.group("paren") or match.group("backtick")).lower()
+
+    def _replace_parameter_command(match: re.Match) -> str:
+        suffix = match.group("suffix").lower()
+        return _PARAMETER_EXPANSION_COMMANDS[suffix]
+
+    candidates = []
+    decoded = _SHELL_ECHO_COMMAND_RE.sub(_replace_echo_command, command)
+    decoded = _PARAMETER_COMMAND_RE.sub(_replace_parameter_command, decoded)
+    if decoded != command:
+        candidates.append(decoded)
+    return candidates
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
+
+    Also catches shell-encoded bypass attempts targeting hardline commands
+    (e.g. ${0/x/r}m -rf /, r\m -rf /, etc.) that construct dangerous commands
+    at runtime.
 
     Returns:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
+
+    # First-pass: direct hardline pattern matching
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
             return (True, description)
+
+    for candidate in _shell_constructed_command_candidates(normalized):
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                return (True, description)
+
     return (False, None)
 
 
@@ -718,10 +795,18 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     command_lower = _normalize_command_for_detection(command).lower()
+
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
+
+    for candidate in _shell_constructed_command_candidates(command_lower):
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                pattern_key = description
+                return (True, pattern_key, description)
+
     return (False, None, None)
 
 
