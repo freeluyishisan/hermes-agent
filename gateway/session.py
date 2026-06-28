@@ -62,6 +62,7 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
+    expand_whatsapp_aliases,  # noqa: F401 - re-exported for gateway.session callers
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
@@ -373,6 +374,17 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
+
+    if context.source.platform != Platform.LOCAL:
+        lines.append("")
+        lines.append(
+            "**Identity safety:** The Current Session Context above is authoritative "
+            "for who is speaking in this chat. Long-term memory/user-profile blocks "
+            "may describe the agent owner or other known people; do NOT treat "
+            "those blocks as the current speaker's identity unless they explicitly "
+            "match this Source/User. Do not address the current speaker as the owner "
+            "unless the Current Session Context says the current User is the owner."
+        )
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
