@@ -52,6 +52,22 @@ def test_sidecar_labels_catchup_internal_errors_as_upstream_photon() -> None:
     assert "PHOTON_ALLOWED_USERS" in index
 
 
+def test_sidecar_send_falls_back_on_enable_data_detection_error() -> None:
+    """When Apple rejects enable_data_detection, the /send handler must
+    catch the error and retry with protocol prefixes stripped."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "enable_data_detection" in index
+    assert "https?:\\/\\/" in index
+    assert "throw err" in index  # non-data-detection errors re-thrown
+
+
+def test_sidecar_normalize_content_handles_richlink() -> None:
+    """Inbound richlink content must be normalized to text with the URL."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert 'content.type === "richlink"' in index
+    assert "content.url" in index
+
+
 def _tabify(src: str) -> str:
     """Convert the fixture's two-space indentation to the tab indentation that
     spectrum-ts ships in `@spectrum-ts/imessage/dist`, so the patch anchors
