@@ -172,15 +172,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build once, load into the local daemon for testing, then push
-      # by digest below. Reads AND writes the registry-backed cache so the
-      # push reuses layers from this build and the next build starts warm.
-      #
-      # Registry cache (type=registry on ghcr.io) is used instead of the gha
-      # cache that previously broke here: its credential is the job-lifetime
-      # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
-      # token failure mode cannot recur.
-      - name: Build image (arm64, cached publish)
+      # PR builds can read the warm registry cache, but they must not write it:
+      # fork/pull_request GITHUB_TOKEN installations can be denied package writes
+      # even when the workflow declares packages: write.  Keep cache writes on
+      # push/release only so PR validation tests the image instead of failing at
+      # the final cache-export phase.
+      - name: Build image (arm64, smoke test, cache read-only PR)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE_NAME }}:test
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
+
+      # Main/release builds read AND write the registry cache so the digest
+      # push below reuses layers from this smoke-test build, and so the next
+      # PR/main build starts warm.
+      - name: Build image (arm64, smoke test, cached publish)
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .

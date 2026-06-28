@@ -955,6 +955,7 @@ class S6ServiceManager:
                 directory already exists.
             RuntimeError: if ``s6-svscanctl`` fails.
         """
+        import os
         import shutil
         import subprocess
 
@@ -964,12 +965,18 @@ class S6ServiceManager:
                 f"profile gateway {profile!r} already registered at {svc_dir}"
             )
 
-        # Build the service directory atomically: write to a sibling
-        # temp dir, then rename. Avoids s6-svscan observing a half-
-        # populated directory on a fast rescan.
-        tmp_dir = svc_dir.with_name(svc_dir.name + ".tmp")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        # Build the service directory atomically in a *hidden* sibling
+        # temp dir, then rename. s6-svscan ignores dot-prefixed entries;
+        # using ``gateway-foo.tmp`` here is racy because the scanner can
+        # treat it as a real service before the supervise skeleton is
+        # seeded, creating root-owned ``supervise/`` internals that the
+        # unprivileged hermes caller then cannot finish or clean up.
+        tmp_dir = svc_dir.with_name(f".{svc_dir.name}.tmp-{os.getpid()}")
+        legacy_tmp_dir = svc_dir.with_name(svc_dir.name + ".tmp")
+        if legacy_tmp_dir.exists():
+            shutil.rmtree(legacy_tmp_dir, ignore_errors=True)
+        for stale in self.scandir.glob(f".{svc_dir.name}.tmp-*"):
+            shutil.rmtree(stale, ignore_errors=True)
         tmp_dir.mkdir(parents=True)
 
         try:
