@@ -787,7 +787,7 @@ class ProcessRegistry:
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:
-                    proc.kill()
+                    self._terminate_host_pid(proc.pid, session.host_start_time)
             except Exception:
                 pass
             try:
@@ -1393,7 +1393,7 @@ class ProcessRegistry:
                 # Local process -- kill the process tree
                 try:
                     if _IS_WINDOWS:
-                        session.process.terminate()
+                        self._terminate_host_pid(session.process.pid, session.host_start_time)
                     else:
                         import psutil
                         try:
