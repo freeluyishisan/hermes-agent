@@ -3012,6 +3012,13 @@ DEFAULT_CONFIG = {
     },
 
 
+    # Command description overrides — allow users to customise slash-command
+    # descriptions in their preferred language without modifying source code.
+    # Example: {"new": "开始新会话", "help": "显示帮助信息"}
+    "commands": {
+        "descriptions": {},  # dict mapping canonical command name -> custom description
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 31,
 }
