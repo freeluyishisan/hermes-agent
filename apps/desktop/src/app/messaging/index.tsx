@@ -16,12 +16,14 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { isMobile } from '@/lib/is-mobile'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { MobileDonePill } from '../mobile-done-pill'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { ListRow } from '../settings/primitives'
@@ -108,6 +110,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [saving, setSaving] = useState<string | null>(null)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
+
+  // Mobile master-detail: list of platforms first, drill into one on tap.
+  const mobileStandalone = isMobile()
+  const [mobileDrilled, setMobileDrilled] = useState(false)
+  const selectPlatform = (id: string) => {
+    setSelectedId(id)
+    if (mobileStandalone) setMobileDrilled(true)
+  }
 
   const refreshPlatforms = useCallback(
     async (silent = false) => {
@@ -272,14 +282,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {!platforms ? (
         <PageLoader label={m.loading} />
       ) : (
-        <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <div
+          className={cn(
+            'grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]',
+            mobileStandalone && (mobileDrilled ? '[&_aside]:hidden' : '[&_main]:hidden')
+          )}
+        >
           <aside className="min-h-0 overflow-y-auto p-2">
             <ul className="space-y-1">
               {visiblePlatforms.map(platform => (
                 <li key={platform.id}>
                   <PlatformRow
                     active={selected?.id === platform.id}
-                    onSelect={() => setSelectedId(platform.id)}
+                    onSelect={() => selectPlatform(platform.id)}
                     platform={platform}
                   />
                 </li>
@@ -288,6 +303,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </aside>
 
           <main className="min-h-0 overflow-hidden">
+            {mobileStandalone && mobileDrilled && (
+              <button
+                aria-label="Back"
+                className="mx-3 mb-2 mt-2 flex items-center gap-1 self-start rounded-md py-2 text-sm text-(--ui-text-secondary) hover:text-foreground"
+                onClick={() => setMobileDrilled(false)}
+                type="button"
+              >
+                <span aria-hidden>←</span> Messaging apps
+              </button>
+            )}
             {selected && (
               <PlatformDetail
                 edits={edits[selected.id] || {}}
@@ -310,6 +335,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </main>
         </div>
       )}
+      <MobileDonePill />
     </PageSearchShell>
   )
 }

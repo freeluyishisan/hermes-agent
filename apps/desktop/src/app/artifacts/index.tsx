@@ -31,6 +31,7 @@ import type { SessionInfo, SessionMessage } from '@/types/hermes'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_NEG_X, PAGE_INSET_X } from '../layout-constants'
+import { MobileDonePill } from '../mobile-done-pill'
 import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -615,6 +616,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </div>
         </div>
       )}
+      <MobileDonePill />
     </PageSearchShell>
   )
 }

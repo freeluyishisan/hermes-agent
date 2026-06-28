@@ -8,6 +8,7 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
+import { isMobile } from '@/lib/is-mobile'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
@@ -45,6 +46,13 @@ export function ModelPill({
   const fastMode = useStore($currentFastMode)
   const reasoningEffort = useStore($currentReasoningEffort)
   const [open, setOpen] = useState(false)
+
+  // On phones the dropdown is desktop-shaped — the panel paints under the
+  // composer + soft keyboard. Hide the picker entirely; model selection
+  // lives in Settings instead.
+  if (isMobile()) {
+    return null
+  }
 
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text

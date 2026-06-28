@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
+import { isMobile } from '@/lib/is-mobile'
 import { cn } from '@/lib/utils'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
@@ -56,6 +57,12 @@ interface StatusbarControlsProps extends ComponentProps<'footer'> {
 
 export function StatusbarControls({ className, leftItems = [], items = [], ...props }: StatusbarControlsProps) {
   const navigate = useNavigate()
+
+  // Mobile: status bar is unused — content lives in the WebView, and the
+  // titlebar area is owned by the OS.
+  if (isMobile()) {
+    return null
+  }
 
   return (
     <footer

@@ -1,19 +1,17 @@
 import { useNavigate } from 'react-router-dom'
 
-import { NEW_CHAT_ROUTE } from './routes'
+import { isMobile } from '@/lib/is-mobile'
 
-const mobileStandalone =
-  typeof window !== 'undefined' &&
-  Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__)
+import { NEW_CHAT_ROUTE } from './routes'
 
 // Floating "Done" pill rendered by full-screen mobile views that don't wrap
 // their content in OverlayView (Skills, Messaging, Artifacts). Mirrors the
 // styling of OverlayView's mobile close affordance so the dismiss control
-// looks identical across menus.
+// looks identical across menus. Renders null on desktop.
 export function MobileDonePill() {
   const navigate = useNavigate()
 
-  if (!mobileStandalone) {
+  if (!isMobile()) {
     return null
   }
 

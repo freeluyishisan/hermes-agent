@@ -10,6 +10,7 @@ import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
+import { isMobile } from '@/lib/is-mobile'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -17,6 +18,7 @@ import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
+import { MobileDonePill } from '../mobile-done-pill'
 import { PageSearchShell } from '../page-search-shell'
 import { ComputerUsePanel } from '../settings/computer-use-panel'
 import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
@@ -194,11 +196,17 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     }
   }
 
+  // On mobile, the horizontal tag-cloud of categories was unusable (rows
+  // ran off-screen and overlapped the camera notch). Replace with a
+  // drill-down list: top-level shows categories as full-width rows;
+  // tapping one filters to just that category with a "back" affordance.
+  const mobileSkillsDrilldown = isMobile() && mode === 'skills'
+
   return (
     <PageSearchShell
       {...props}
       filters={
-        mode === 'skills' && categories.length > 0 ? (
+        !mobileSkillsDrilldown && mode === 'skills' && categories.length > 0 ? (
           <>
             <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
               {t.skills.all} <TextTabMeta>{totalSkills}</TextTabMeta>
@@ -246,8 +254,38 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     >
       {!skills || !toolsets ? (
         <PageLoader label={t.skills.loading} />
+      ) : mobileSkillsDrilldown && activeCategory === null && query.trim() === '' ? (
+        <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
+          <ul className="divide-y divide-(--ui-stroke-secondary)">
+            {categories.map(category => (
+              <li key={category.key}>
+                <button
+                  className="flex w-full items-center justify-between gap-3 py-3.5 text-left active:bg-(--ui-bg-quinary)"
+                  onClick={() => setActiveCategory(category.key)}
+                  type="button"
+                >
+                  <span className="truncate text-base font-medium">{prettyName(category.key)}</span>
+                  <span className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
+                    {category.count}
+                    <Codicon name="chevron-right" size="0.875rem" />
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : mode === 'skills' ? (
         <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
+          {mobileSkillsDrilldown && activeCategory !== null && (
+            <button
+              className="mb-2 flex items-center gap-1.5 text-sm text-muted-foreground active:text-foreground"
+              onClick={() => setActiveCategory(null)}
+              type="button"
+            >
+              <Codicon name="chevron-left" size="0.875rem" />
+              {t.skills.all}
+            </button>
+          )}
           {visibleSkills.length === 0 ? (
             <EmptyState description={t.skills.noSkillsDesc} title={t.skills.noSkillsTitle} />
           ) : (
@@ -352,6 +390,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
           )}
         </div>
       )}
+      <MobileDonePill />
     </PageSearchShell>
   )
 }

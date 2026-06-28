@@ -9,7 +9,8 @@ import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway,
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Bookmark, BookmarkFilled, Download, Pin, Trash2 } from '@/lib/icons'
+import { Activity, AlertCircle, ArrowLeft, BarChart3, Bookmark, BookmarkFilled, Download, Pin, Trash2 } from '@/lib/icons'
+import { isMobile } from '@/lib/is-mobile'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -112,6 +113,14 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
   const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
+
+  // Mobile master-detail: list first, drill into the selected section on tap.
+  const mobileStandalone = isMobile()
+  const [mobileDrilled, setMobileDrilled] = useState(false)
+  const selectSection = (value: (typeof SECTIONS)[number]) => {
+    setSection(value)
+    if (mobileStandalone) setMobileDrilled(true)
+  }
 
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<StatusResponse | null>(null)
@@ -258,7 +267,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
 
   return (
     <OverlayView closeLabel={cc.close} onClose={onClose}>
-      <OverlaySplitLayout>
+      <OverlaySplitLayout
+        className={mobileStandalone ? (mobileDrilled ? '[&_aside]:hidden' : '[&_main]:hidden') : undefined}
+      >
         <OverlaySidebar>
           {SECTIONS.map(value => (
             <OverlayNavItem
@@ -266,12 +277,23 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               icon={value === 'sessions' ? Pin : value === 'system' ? Activity : BarChart3}
               key={value}
               label={cc.sections[value]}
-              onClick={() => setSection(value)}
+              onClick={() => selectSection(value)}
             />
           ))}
         </OverlaySidebar>
 
         <OverlayMain>
+          {mobileStandalone && mobileDrilled && (
+            <button
+              aria-label="Back"
+              className="-mt-2 mb-2 flex items-center gap-1 self-start rounded-md px-2 py-2 text-sm text-(--ui-text-secondary) hover:text-foreground"
+              onClick={() => setMobileDrilled(false)}
+              type="button"
+            >
+              <ArrowLeft className="size-4" />
+              {cc.close}
+            </button>
+          )}
           <header className="mb-4 flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
