@@ -167,7 +167,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -184,14 +184,14 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
+  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
+  { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
+  { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
+  { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
   {
     path: "/docs",
     labelKey: "documentation",
@@ -543,11 +543,16 @@ export default function App() {
             id="app-sidebar"
             aria-label={t.app.navigation}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
-              "border-r border-current/20",
+              "fixed top-0 start-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
+              "border-e border-current/20",
               "bg-background-base/95 backdrop-blur-sm",
               "transition-[transform] duration-200 ease-out",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
+              // RTL anchors the sidebar to the right edge, so the off-canvas
+              // slide flips direction. Scoped below lg so the desktop
+              // lg:translate-x-0 never has to fight it.
+              mobileOpen
+                ? "translate-x-0"
+                : "-translate-x-full rtl:max-lg:translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
               "lg:transition-[width] lg:duration-[600ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
               collapsed && "lg:w-14",
@@ -577,9 +582,7 @@ export default function App() {
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
-                  Hermes
-                  <br />
-                  Agent
+                  {t.app.brand}
                 </Typography>
               </div>
 
@@ -762,7 +765,7 @@ export default function App() {
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           <Spinner />
-                          <span>Loading chat…</span>
+                          <span>{t.chatPage?.loading ?? "Loading chat…"}</span>
                         </div>
                       </div>
                     ) : null
@@ -1165,7 +1168,13 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
 function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
   const rect = anchor.getBoundingClientRect();
   const sidebar = document.getElementById("app-sidebar");
-  const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
+  // In RTL the sidebar sits on the right edge, so the tooltip hangs off the
+  // sidebar's *left* side; position from the matching edge or it renders
+  // off-screen.
+  const isRtl = document.documentElement.dir === "rtl";
+  const sidebarRect = sidebar?.getBoundingClientRect();
+  const sidebarRight = sidebarRect?.right ?? rect.right;
+  const sidebarLeft = sidebarRect?.left ?? rect.left;
   const [isWarm, setIsWarm] = useState(false);
 
   useEffect(() => {
@@ -1191,7 +1200,9 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
       )}
       style={{
         top: rect.top + rect.height / 2,
-        left: sidebarRight + 8,
+        ...(isRtl
+          ? { right: window.innerWidth - sidebarLeft + 8 }
+          : { left: sidebarRight + 8 }),
         transform: "translateY(-50%)",
         opacity: isWarm ? 1 : undefined,
         animation: isWarm ? "none" : "sidebar-tooltip-in 120ms ease-out",

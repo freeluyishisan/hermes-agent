@@ -166,6 +166,8 @@ function ThemeSwitcherOptions({
   setTheme,
   themeName,
 }: ThemeSwitcherOptionsProps) {
+  const { t } = useI18n();
+
   return (
     <>
       {availableThemes.map((th) => {
@@ -195,11 +197,11 @@ function ThemeSwitcherOptions({
                 mondwest
                 className="truncate text-display text-xs tracking-wide"
               >
-                {th.label}
+                {t.theme.names?.[th.name] ?? th.label}
               </Typography>
               {th.description && (
                 <Typography className="truncate text-xs tracking-normal text-text-tertiary">
-                  {th.description}
+                  {t.theme.descriptions?.[th.name] ?? th.description}
                 </Typography>
               )}
             </div>
