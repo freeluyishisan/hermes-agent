@@ -79,8 +79,10 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
             with the app and follows light/dark; the xterm canvas itself is
             painted the resolved surface color in use-terminal-session. */}
         <div
+          aria-label={`${shellName} terminal`}
           className="h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-editor-surface-background)! [&_.xterm-viewport]:bg-(--ui-editor-surface-background)!"
           ref={hostRef}
+          role="region"
         />
       </div>
     </div>

@@ -592,6 +592,7 @@ function CronJobDetail({
                   {c.edit}
                 </Button>
                 <Button
+                  aria-label={c.deleteTitle}
                   className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                   onClick={onDelete}
                   size="sm"

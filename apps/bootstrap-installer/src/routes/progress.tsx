@@ -34,24 +34,25 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
     bootstrap.currentStage != null
       ? bootstrap.stages[bootstrap.currentStage]
       : null
+  const currentStageTitle =
+    bootstrap.status === 'running'
+      ? currentStage
+        ? currentStage.info.title
+        : 'Preparing…'
+      : bootstrap.status === 'completed'
+        ? 'Done'
+        : 'Installing'
+  const progressText = `${progress.done} of ${progress.total} steps — ${currentStageTitle}`
 
   return (
     <div className="hermes-fade-in flex h-full flex-col">
       <div className="border-b border-border px-6 py-4">
-        <div className="mb-3 flex items-center justify-between text-xs">
+        <div aria-atomic="true" aria-live="polite" className="mb-3 flex items-center justify-between text-xs" role="status">
           <div className="flex items-center gap-2 text-foreground">
             {bootstrap.status === 'running' && (
-              <Loader2 size={12} className="animate-spin text-primary" />
+              <Loader2 aria-hidden="true" className="animate-spin text-primary" size={12} />
             )}
-            <span>
-              {bootstrap.status === 'running'
-                ? currentStage
-                  ? currentStage.info.title
-                  : 'Preparing\u2026'
-                : bootstrap.status === 'completed'
-                  ? 'Done'
-                  : 'Installing'}
-            </span>
+            <span>{currentStageTitle}</span>
           </div>
           <div className="text-muted-foreground">
             {progress.done} of {progress.total} steps
@@ -59,7 +60,14 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
         </div>
         {/* Top progress bar — plain HTML, derived from --primary so it
             tracks the theme accent. */}
-        <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          aria-valuemax={progress.total}
+          aria-valuemin={0}
+          aria-valuenow={progress.done}
+          aria-valuetext={progressText}
+          className="h-1 w-full overflow-hidden rounded-full bg-muted"
+          role="progressbar"
+        >
           <div
             className="h-full bg-primary transition-all duration-300 ease-out"
             style={{ width: `${Math.max(2, progress.fraction * 100)}%` }}
@@ -75,6 +83,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
               if (!rec) return null
               return (
                 <li
+                  aria-label={`${rec.info.title}, ${stageStateLabel(rec.state ?? null)}`}
                   key={name}
                   className={clsx(
                     'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
@@ -87,6 +96,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
                   )}
                 >
                   <StateIcon state={rec.state ?? null} />
+                  <span className="sr-only">{stageStateLabel(rec.state ?? null)}: </span>
                   <span className="flex-1 truncate">{rec.info.title}</span>
                   {rec.durationMs != null && (
                     <span className="text-xs text-muted-foreground">
@@ -100,7 +110,12 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
         </div>
 
         {showLogs && (
-          <div className="flex w-1/2 flex-col border-l border-border bg-card/40">
+          <div
+            aria-label="Installation details"
+            className="flex w-1/2 flex-col border-l border-border bg-card/40"
+            id="install-log-panel"
+            role="region"
+          >
             <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
               <div className="text-xs font-medium text-foreground/80">
                 Live output
@@ -109,7 +124,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
                 {bootstrap.logs.length} lines
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-relaxed">
+            <div aria-label="Installation log" className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-relaxed" role="log">
               {bootstrap.logs.map((entry, idx) => (
                 <div
                   key={idx}
@@ -130,12 +145,15 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
       <div className="flex shrink-0 items-center justify-between border-t border-border px-6 py-3">
         <button
           type="button"
+          aria-controls="install-log-panel"
+          aria-expanded={showLogs}
           onClick={() => setShowLogs((v) => !v)}
-          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex items-center gap-1.5 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
-          <FileText size={14} />
+          <FileText aria-hidden="true" size={14} />
           {showLogs ? 'Hide details' : 'Show details'}
           <ChevronRight
+            aria-hidden="true"
             size={12}
             className={clsx(
               'transition-transform',
@@ -160,16 +178,16 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
 
 function StateIcon({ state }: { state: StageState | null }) {
   if (state === 'running') {
-    return <Loader2 size={14} className="animate-spin text-primary" />
+    return <Loader2 aria-hidden="true" className="animate-spin text-primary" size={14} />
   }
   if (state === 'succeeded') {
-    return <Check size={14} className="text-emerald-400" />
+    return <Check aria-hidden="true" className="text-emerald-400" size={14} />
   }
   if (state === 'skipped') {
-    return <ChevronRight size={14} className="text-muted-foreground/70" />
+    return <ChevronRight aria-hidden="true" className="text-muted-foreground/70" size={14} />
   }
   if (state === 'failed') {
-    return <X size={14} className="text-destructive" />
+    return <X aria-hidden="true" className="text-destructive" size={14} />
   }
   return (
     <div
@@ -177,6 +195,14 @@ function StateIcon({ state }: { state: StageState | null }) {
       aria-hidden
     />
   )
+}
+
+function stageStateLabel(state: StageState | null): string {
+  if (state === 'running') return 'Running'
+  if (state === 'succeeded') return 'Completed'
+  if (state === 'skipped') return 'Skipped'
+  if (state === 'failed') return 'Failed'
+  return 'Pending'
 }
 
 function formatDuration(ms: number): string {
