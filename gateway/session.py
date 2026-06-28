@@ -1114,13 +1114,16 @@ class SessionStore:
                 elif entry.resume_pending:
                     # Restart-interrupted session: preserve the session_id
                     # and return the existing entry so the transcript
-                    # reloads intact.  ``resume_pending`` is cleared after
-                    # the NEXT successful turn completes (not here), which
-                    # means a re-interrupted retry keeps trying — the
-                    # stuck-loop counter handles terminal escalation.
-                    entry.updated_at = now
-                    self._save()
-                    return entry
+                    # reloads intact, BUT still honour the session reset
+                    # policy.  If the session has crossed a daily or idle
+                    # boundary while the gateway was down, let it
+                    # auto-reset so the user starts fresh.
+                    reset_reason = self._should_reset(entry, source)
+                    if not reset_reason:
+                        entry.updated_at = now
+                        self._save()
+                        return entry
+                    # Fall through to auto-reset below.
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
