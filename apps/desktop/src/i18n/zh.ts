@@ -2395,7 +2395,7 @@ export const zh: Translations = {
     dangerZone: '危险区域',
     checking: '正在检查已安装的内容…',
     confirmTitle: '确认卸载',
-    confirmBody: consequence => `这将移除${consequence}。此操作不可撤销。`,
+    confirmBody: (consequence: string) => `这将移除${consequence}。此操作不可撤销。`,
     uninstalling: '正在卸载…',
     yesUninstall: '是的，卸载',
     cancel: '取消',
@@ -2422,5 +2422,6 @@ export const zh: Translations = {
           '全部 — 聊天界面、Hermes 代理以及您的所有配置、聊天记录、密钥和日志'
       }
     }
-  }
+  },
 }
+

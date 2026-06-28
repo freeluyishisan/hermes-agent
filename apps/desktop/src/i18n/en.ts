@@ -2240,7 +2240,7 @@ export const en: Translations = {
     dangerZone: 'Danger zone',
     checking: "Checking what's installed…",
     confirmTitle: 'Confirm uninstall',
-    confirmBody: consequence => `This removes ${consequence}. This can't be undone.`,
+    confirmBody: (consequence: string) => `This removes ${consequence}. This can't be undone.`,
     uninstalling: 'Uninstalling…',
     yesUninstall: 'Yes, uninstall',
     cancel: 'Cancel',
@@ -2267,5 +2267,6 @@ export const en: Translations = {
           'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
       }
     }
-  }
+  },
 }
+

@@ -2484,7 +2484,7 @@ export const fr: Translations = {
     dangerZone: 'Zone dangereuse',
     checking: 'Vérification de ce qui est installé…',
     confirmTitle: 'Confirmer la désinstallation',
-    confirmBody: consequence => `Cela supprimera ${consequence}. Cette action est irréversible.`,
+    confirmBody: (consequence: string) => `Cela supprimera ${consequence}. Cette action est irréversible.`,
     uninstalling: 'Désinstallation…',
     yesUninstall: 'Oui, désinstaller',
     cancel: 'Annuler',
