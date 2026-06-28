@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -2405,6 +2406,7 @@ class TestProfileArg:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
@@ -2433,6 +2435,132 @@ class TestProfileArg:
         plist_path = gateway_cli.get_launchd_plist_path()
 
         assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
+
+    def test_launchd_wrapper_path_is_profile_scoped(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "mybot"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: default_home)
+        default_path = gateway_cli._launchd_wrapper_path()
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_home)
+        profile_path = gateway_cli._launchd_wrapper_path()
+
+        assert default_path != profile_path
+        assert default_path.parent == machine_home / ".local" / "bin"
+        assert profile_path.parent == machine_home / ".local" / "bin"
+        assert default_path.name == "hermes-gateway-launchd-ai.hermes.gateway.sh"
+        assert profile_path.name == "hermes-gateway-launchd-ai.hermes.gateway-mybot.sh"
+
+    def test_launchd_wrapper_only_for_python_under_volumes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+
+        external_python = "/Volumes/ExternalHermes/hermes/venv/bin/python"
+        assert gateway_cli._needs_launchd_wrapper(external_python)
+        assert not gateway_cli._needs_launchd_wrapper("/usr/bin/python3")
+
+        link = tmp_path / "python"
+        link.symlink_to(external_python)
+        assert gateway_cli._needs_launchd_wrapper(str(link))
+
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        assert not gateway_cli._needs_launchd_wrapper(external_python)
+
+    def test_launchd_plist_uses_wrapper_only_for_external_python(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        wrapper = machine_home / ".local" / "bin" / "wrapper.sh"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_create_launchd_wrapper",
+            lambda python_path, profile_arg: calls.append((python_path, profile_arg)) or str(wrapper),
+        )
+
+        external_python = "/Volumes/ExternalHermes/hermes/venv/bin/python"
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: external_python)
+        plist = gateway_cli.generate_launchd_plist()
+        assert calls == [(external_python, "")]
+        assert "<string>/bin/zsh</string>" in plist
+        assert f"<string>{wrapper}</string>" in plist
+        assert f"<string>{external_python}</string>" not in plist
+        assert f"<string>{machine_home}</string>" in plist
+
+        calls.clear()
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        plist = gateway_cli.generate_launchd_plist()
+        assert calls == []
+        assert "<string>/bin/zsh</string>" not in plist
+        assert "<string>/usr/bin/python3</string>" in plist
+
+    def test_launchd_wrapper_shell_quotes_plugin_env_values(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        plugin_dir = hermes_home / "plugins" / "memory"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / ".env").write_text(
+            "\n".join(
+                [
+                    "PLAIN=value",
+                    "SPACE=hello world",
+                    "QUOTE=can't stop",
+                    'DOUBLE="two words $HOME"',
+                    "DOLLAR=$HOME $(rm -rf /) `uname` ; &",
+                    "export EXPORTED=a;b&c",
+                    "BAD-NAME=should-not-export",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        machine_home = tmp_path / "machine-home"
+        project_root = tmp_path / "checkout"
+        machine_home.mkdir()
+        project_root.mkdir()
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: tmp_path / "venv")
+        monkeypatch.setattr(gateway_cli, "_build_launchd_sane_path", lambda: "/usr/bin:/bin")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
+
+        wrapper_path = Path(
+            gateway_cli._create_launchd_wrapper(
+                "/Volumes/ExternalHermes/hermes/venv/bin/python",
+                "--profile mybot",
+            )
+        )
+        script = wrapper_path.read_text(encoding="utf-8")
+
+        expected = {
+            "PLAIN": "value",
+            "SPACE": "hello world",
+            "QUOTE": "can't stop",
+            "DOUBLE": "two words $HOME",
+            "DOLLAR": "$HOME $(rm -rf /) `uname` ; &",
+            "EXPORTED": "a;b&c",
+        }
+        for key, value in expected.items():
+            assert f"export {key}={shlex.quote(value)}" in script
+        assert "BAD-NAME" not in script
+        expected_exec = (
+            f"exec {shlex.quote('/Volumes/ExternalHermes/hermes/venv/bin/python')} "
+            "-m hermes_cli.main --profile mybot gateway run --replace"
+        )
+        assert expected_exec in script
+        assert wrapper_path.stat().st_mode & 0o111
 
 
 class TestRemapPathForUser:
@@ -3362,6 +3490,7 @@ class TestServiceWorkingDirIsStable:
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
         plist = gateway_cli.generate_launchd_plist()
         m = re.search(r"<key>WorkingDirectory</key>\s*<string>(.*?)</string>", plist)
         assert m, "plist has no WorkingDirectory entry"
