@@ -165,6 +165,26 @@ _SANE_PATH_DIRS = (
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
 
 
+def _read_subprocess_text(path: str) -> str:
+    """Read a browser subprocess's stdout/stderr temp file as text.
+
+    Browser child processes (Chrome, the agent-browser CLI) emit output in the
+    OS *system* locale, which on non-UTF-8 Windows installs (GBK / Shift-JIS /
+    EUC-KR) is not valid UTF-8. Decoding such bytes with a hardcoded
+    ``encoding="utf-8"`` raises ``UnicodeDecodeError`` and makes every browser
+    tool non-functional (#47456). Decode with ``errors="surrogateescape"`` so
+    arbitrary bytes round-trip losslessly and the call never raises; the
+    ASCII/UTF-8 JSON control payload downstream is unaffected.
+
+    ``newline=""`` disables universal-newline translation so CR/CRLF bytes are
+    preserved verbatim — without it, text mode rewrites ``\r\n``/``\r`` to
+    ``\n``, which would break the lossless round-trip the docstring promises
+    (notably on Windows, the exact platform this resilient decode targets).
+    """
+    with open(path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        return f.read()
+
+
 @functools.lru_cache(maxsize=1)
 def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     """Find Homebrew versioned Node.js bin directories (e.g. node@20, node@24).
@@ -970,8 +990,7 @@ def _run_chrome_fallback_command(
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, "r", encoding="utf-8") as f:
-                stdout = f.read().strip()
+            stdout = _read_subprocess_text(stdout_path).strip()
             if stdout:
                 return json.loads(stdout.split("\n")[-1])
         except Exception as exc:
@@ -2257,10 +2276,8 @@ def _run_browser_command(
             result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
             # Fall through to fallback check below
         else:
-            with open(stdout_path, "r", encoding="utf-8") as f:
-                stdout = f.read()
-            with open(stderr_path, "r", encoding="utf-8") as f:
-                stderr = f.read()
+            stdout = _read_subprocess_text(stdout_path)
+            stderr = _read_subprocess_text(stderr_path)
             returncode = proc.returncode
 
             # Clean up temp files (best-effort)
