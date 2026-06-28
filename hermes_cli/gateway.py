@@ -3718,12 +3718,6 @@ def generate_launchd_plist() -> str:
         <string>{hermes_home}</string>
     </dict>
 
-    <key>LimitLoadToSessionType</key>
-    <array>
-        <string>Aqua</string>
-        <string>Background</string>
-    </array>
-    
     <key>RunAtLoad</key>
     <true/>
     
