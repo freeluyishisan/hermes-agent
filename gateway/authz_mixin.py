@@ -363,11 +363,6 @@ class GatewayAuthorizationMixin:
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
 
-        # Check pairing store (always checked, regardless of allowlists)
-        platform_name = source.platform.value if source.platform else ""
-        if self.pairing_store.is_approved(platform_name, user_id):
-            return True
-
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
         group_user_allowlist = ""
@@ -376,6 +371,34 @@ class GatewayAuthorizationMixin:
             group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
             group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+
+        # Check pairing store. If a platform or global allowlist is
+        # configured, a previously-paired user must STILL be present in
+        # that allowlist to be honored — otherwise a user who tapped
+        # "Always" on an approval button could permanently bypass
+        # TELEGRAM_ALLOWED_USERS (or equivalent) via the pairing store
+        # even after being removed from the allowlist (issue #23778).
+        platform_name = source.platform.value if source.platform else ""
+        if self.pairing_store.is_approved(platform_name, user_id):
+            _any_env_allowlist_configured = bool(
+                platform_allowlist or group_user_allowlist
+                or group_chat_allowlist or global_allowlist
+            )
+            if not _any_env_allowlist_configured:
+                return True
+            _in_platform_allowlist = platform_allowlist and (
+                "*" in {u.strip() for u in platform_allowlist.split(",")}
+                or str(user_id) in {u.strip() for u in platform_allowlist.split(",")}
+            )
+            _in_global_allowlist = global_allowlist and (
+                "*" in {u.strip() for u in global_allowlist.split(",")}
+                or str(user_id) in {u.strip() for u in global_allowlist.split(",")}
+            )
+            if _in_platform_allowlist or _in_global_allowlist:
+                return True
+            # Paired but no longer in the configured allowlist — deny and
+            # fall through to the rest of the allowlist logic below (which
+            # will also deny, but keeps a single source of truth).
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No env allowlist configured. Adapters that own their own
