@@ -1048,6 +1048,20 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     except Exception as e:
         logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
 
+    # End the session in state.db so it's no longer marked as active.
+    # This covers clean exit (/exit), Ctrl+C, and POSIX SIGTERM paths
+    # (the atexit-registered _run_cleanup fires before the process dies).
+    # Prior art: the normal close path at cli.py:13326 also calls
+    # end_session() with "cli_close"; we use "shutdown" for the atexit path
+    # since the reason may differ (signal, crash, etc.).
+    try:
+        if _active_agent_ref and getattr(_active_agent_ref, 'session_id', None):
+            _db = getattr(_active_agent_ref, '_session_db', None)
+            if _db is not None:
+                _db.end_session(_active_agent_ref.session_id, "shutdown")
+    except Exception:
+        pass
+
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     if not _single_query_finalize_attempted_session_ids:
@@ -11092,7 +11106,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         import time as _time
 
-        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+        timeout = CLI_CONFIG.get("clarify", {}).get("timeout")
+        if timeout is None:
+            timeout = CLI_CONFIG.get("agent", {}).get("clarify_timeout")
+        if timeout is None:
+            timeout = 120
         response_queue = queue.Queue()
         is_open_ended = not choices
 
