@@ -545,6 +545,23 @@ def compress_context(
     if todo_snapshot:
         compressed.append({"role": "user", "content": todo_snapshot})
 
+    try:
+        next_generation = (
+            max(
+                int(m.get("compression_generation") or 0)
+                for m in messages
+                if isinstance(m, dict)
+            )
+            + 1
+        )
+    except (TypeError, ValueError):
+        next_generation = int(getattr(agent, "_current_compression_generation", 0) or 0) + 1
+    for msg in compressed:
+        if isinstance(msg, dict):
+            msg.setdefault("compression_generation", next_generation)
+            msg.setdefault("turn_id", f"compression:{next_generation}")
+    agent._current_compression_generation = next_generation
+
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)
     agent._cached_system_prompt = new_system_prompt
