@@ -2943,6 +2943,16 @@ def _sync_session_key_after_compress(
             pass
 
 
+# --- quota cache for TUI (avoids HTTP on every _get_usage tick) ---
+# Delegates to account_usage.get_quota_status_bar_data() — single source
+# of truth shared with the CLI (cli.py).
+
+def _get_tui_quota_snapshot(agent) -> dict:
+    """Cached quota fetch for TUI gateway — same TTL pattern as CLI."""
+    from agent.account_usage import get_quota_status_bar_data
+    return get_quota_status_bar_data(agent)
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -2981,6 +2991,11 @@ def _get_usage(agent) -> dict:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
             pass
+    # --- quota / cost (cached) ---
+    try:
+        usage.update(_get_tui_quota_snapshot(agent))
+    except Exception:
+        pass
     return usage
 
 

@@ -617,6 +617,72 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_zai_account_usage(api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Fetch Z.AI (Zhipu) token quota via undocumented monitoring endpoint."""
+    token = str(api_key or "").strip()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(
+            "https://api.z.ai/api/monitor/usage/quota/limit",
+            headers=headers,
+        )
+        resp.raise_for_status()
+    payload = resp.json() or {}
+    data = payload.get("data") or {}
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+
+    limits = data.get("limits") or []
+    for lim in limits:
+        lim_type = str(lim.get("type") or "")
+        pct = lim.get("percentage")
+        next_reset_ms = lim.get("nextResetTime")
+        remaining = lim.get("remaining")
+
+        if lim_type == "TOKENS_LIMIT" and pct is not None:
+            unit_h = int(lim.get("unit") or 0)
+            num_w = int(lim.get("number") or 0)
+            label = f"Tokens ({num_w * unit_h}h window)"
+            reset_dt = _parse_dt(next_reset_ms / 1000) if next_reset_ms else None
+            windows.append(
+                AccountUsageWindow(
+                    label=label,
+                    used_percent=float(pct),
+                    reset_at=reset_dt,
+                )
+            )
+        elif lim_type == "TIME_LIMIT" and pct is not None:
+            reset_dt = _parse_dt(next_reset_ms / 1000) if next_reset_ms else None
+            windows.append(
+                AccountUsageWindow(
+                    label="Requests",
+                    used_percent=float(pct),
+                    reset_at=reset_dt,
+                    detail=f"{remaining} remaining" if remaining else None,
+                )
+            )
+
+    level = data.get("level")
+    if level:
+        details.append(f"Plan: {level}")
+
+    if not windows and not details:
+        return None
+
+    return AccountUsageSnapshot(
+        provider="zai",
+        source="quota_monitor_api",
+        fetched_at=_utc_now(),
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -624,6 +690,25 @@ def fetch_account_usage(
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
+    # Heuristic: resolve real provider from base_url when the name is not
+    # directly recognised (e.g. "xai-oauth" hitting api.z.ai for glm models).
+    if normalized not in {"openai-codex", "anthropic", "openrouter", "zai", "nous"}:
+        _host = (base_url or "").lower()
+        if "api.z.ai" in _host or "open.bigmodel.cn" in _host:
+            normalized = "zai"
+            # xai-oauth OAuth tokens won't work on the Z.AI quota endpoint;
+            # resolve the explicit zai provider key from config.
+            if not api_key:
+                try:
+                    for _name in ("zai", "custom:zai"):
+                        _rt = resolve_runtime_provider(
+                            requested=_name, explicit_base_url=None, explicit_api_key=None,
+                        )
+                        api_key = str(_rt.get("api_key", "") or "").strip()
+                        if api_key:
+                            break
+                except Exception:
+                    pass
     if normalized in {"", "auto", "custom"}:
         return None
     try:
@@ -633,6 +718,74 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "zai":
+            return _fetch_zai_account_usage(api_key)
     except Exception:
         return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Shared quota status-bar helper (used by CLI and TUI gateway)
+# ---------------------------------------------------------------------------
+
+_quota_sb_cache: dict = {}
+_quota_sb_cache_ts: float = 0
+_QUOTA_SB_CACHE_TTL = 60  # seconds
+
+
+def get_quota_status_bar_data(agent) -> dict:
+    """Return a dict with ``quota_pct`` / ``quota_reset`` / ``quota_rl_text``
+    suitable for status-bar rendering.  Results are cached for *TTL* seconds
+    to avoid HTTP on every render tick.
+
+    This is the single source of truth used by both ``cli.py`` and
+    ``tui_gateway/server.py``.
+    """
+    import time as _time
+
+    global _quota_sb_cache, _quota_sb_cache_ts
+    now = _time.monotonic()
+    if _quota_sb_cache and (now - _quota_sb_cache_ts) < _QUOTA_SB_CACHE_TTL:
+        return _quota_sb_cache
+
+    result: dict = {}
+    try:
+        _provider = (getattr(agent, "model", None) or "").split("/")[0]
+        _base_url = getattr(agent, "base_url", None)
+        _api_key = getattr(agent, "api_key", None)
+        snap_acc = fetch_account_usage(
+            provider=_provider,
+            base_url=_base_url,
+            api_key=_api_key,
+        )
+        if snap_acc and snap_acc.windows:
+            best_w = max(snap_acc.windows, key=lambda w: w.used_percent or 0)
+            result["quota_pct"] = round(best_w.used_percent) if best_w.used_percent is not None else None
+            if best_w.reset_at:
+                from datetime import datetime, timezone
+                _now = datetime.now(timezone.utc)
+                _reset = best_w.reset_at if best_w.reset_at.tzinfo else best_w.reset_at.replace(tzinfo=timezone.utc)
+                _secs = max(0, (_reset - _now).total_seconds())
+                if _secs > 0:
+                    h, rem = divmod(int(_secs), 3600)
+                    m, s = divmod(rem, 60)
+                    result["quota_reset"] = f"{h}h{m}m"
+            else:
+                result["quota_reset"] = "see /usage"
+    except Exception:
+        pass
+
+    # Fallback: rate-limit headers from last response
+    if "quota_pct" not in result:
+        try:
+            from agent.rate_limit_tracker import format_rate_limit_compact
+            rl = format_rate_limit_compact()
+            if rl:
+                result["quota_rl_text"] = rl
+        except Exception:
+            pass
+
+    _quota_sb_cache = result
+    _quota_sb_cache_ts = now
+    return result
