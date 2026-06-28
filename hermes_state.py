@@ -853,6 +853,9 @@ class SessionDB:
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
+                # Full sync ensures readers see committed writes immediately
+                # (WAL mode's default NORMAL can delay pages to disk).
+                self._conn.execute("PRAGMA synchronous=FULL")
                 self._init_schema()
 
             try:
@@ -2643,7 +2646,7 @@ class SessionDB:
                     s.started_at
                 ) AS last_active
             FROM sessions s
-            WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
+            WHERE s.source = 'cron' AND s.ended_at IS NOT NULL AND s.id >= ? AND s.id < ?
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """

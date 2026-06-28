@@ -164,7 +164,7 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // backend), so no user action signals the UI. Poll the bounded cron list on
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
-const CRON_POLL_INTERVAL_MS = 30_000
+const CRON_POLL_INTERVAL_MS = 5_000
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
 // self-managed sidebar section (refreshMessagingSessions). Excluding both here
@@ -698,8 +698,7 @@ export function DesktopController() {
     queryClient,
     refreshHermesConfig,
     refreshSessions,
-    sessionStateByRuntimeIdRef,
-    updateSessionState
+    sessionStateByRuntimeIdRef,    updateSessionState
   })
 
   const { handleDesktopGatewayEvent, restartPreviewServer } = usePreviewRouting({
