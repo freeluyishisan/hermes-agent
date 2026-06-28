@@ -10099,7 +10099,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             relaunched_profiles = []
 
             # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
+            # Discover all Hermes gateway units (default + profiles).
+            # Default service is ``hermes-gateway.service``; profile services
+            # follow ``hermes-<profile>-gateway.service`` (e.g.
+            # ``hermes-secondbrain-gateway.service``).  The glob
+            # ``hermes*gateway*`` catches both shapes.
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -10115,7 +10119,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             scope_cmd
                             + [
                                 "list-units",
-                                "hermes-gateway*",
+                                "hermes*gateway*",
                                 "--plain",
                                 "--no-legend",
                                 "--no-pager",
