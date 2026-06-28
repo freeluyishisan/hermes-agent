@@ -581,6 +581,46 @@ class TestSanitizeEnvLines:
         result = _sanitize_env_lines(lines)
         assert result == lines
 
+    @pytest.mark.parametrize("quote", ['"', "'"])
+    def test_known_key_substring_inside_quoted_value_not_split(self, quote):
+        """Quoted values containing KEY= text must not create new assignments."""
+        lines = [f"OPENAI_BASE_URL={quote}https://example.invalid/?next=ANTHROPIC_API_KEY=not-a-key{quote}\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_escaped_quotes_in_double_quoted_value_not_split(self):
+        """Escaped quotes inside quoted values must not end quote tracking."""
+        lines = ['OPENAI_BASE_URL="https://example.com/\\"quoted\\" and ANTHROPIC_API_KEY=not-a-key"\n']
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_known_key_after_closing_quote_still_splits(self):
+        """A real missing-newline repair still works after a quoted value."""
+        lines = ['OPENAI_BASE_URL="https://api.example.invalid/v1"ANTHROPIC_API_KEY=sk-ant-xxx\n']
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            'OPENAI_BASE_URL="https://api.example.invalid/v1"\n',
+            "ANTHROPIC_API_KEY=sk-ant-xxx\n",
+        ]
+
+    def test_unquoted_apostrophe_before_known_key_still_splits(self):
+        """Quotes inside unquoted values must not suppress real repairs."""
+        lines = ["OPENAI_BASE_URL=https://example.invalid/it'sANTHROPIC_API_KEY=sk-ant-xxx\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "OPENAI_BASE_URL=https://example.invalid/it's\n",
+            "ANTHROPIC_API_KEY=sk-ant-xxx\n",
+        ]
+
+    def test_unquoted_double_quote_before_known_key_still_splits(self):
+        """Double quotes inside unquoted values must not suppress real repairs."""
+        lines = ['OPENAI_BASE_URL=https://example.invalid/path"fragANTHROPIC_API_KEY=sk-ant-xxx\n']
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            'OPENAI_BASE_URL=https://example.invalid/path"frag\n',
+            "ANTHROPIC_API_KEY=sk-ant-xxx\n",
+        ]
+
     def test_unknown_keys_not_split(self):
         """Unknown key names on one line are NOT split (avoids false positives)."""
         lines = ["CUSTOM_VAR=value123OTHER_THING=value456\n"]

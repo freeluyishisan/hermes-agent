@@ -6523,6 +6523,41 @@ def invalidate_env_cache() -> None:
     _env_cache = None
 
 
+def _is_inside_env_quote(text: str, index: int) -> bool:
+    """Return True when ``index`` falls inside a quoted .env value."""
+    quote: Optional[str] = None
+    escaped = False
+    maybe_quoted_value = False
+
+    for pos, char in enumerate(text):
+        if pos >= index:
+            return quote is not None
+
+        if quote:
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and char == "\\":
+                escaped = True
+                continue
+            if char == quote:
+                quote = None
+            continue
+
+        if char == "=":
+            maybe_quoted_value = True
+            continue
+        if maybe_quoted_value and char.isspace():
+            continue
+        if maybe_quoted_value and char in {"'", '"'}:
+            quote = char
+            maybe_quoted_value = False
+            continue
+        maybe_quoted_value = False
+
+    return quote is not None
+
+
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
@@ -6560,7 +6595,8 @@ def _sanitize_env_lines(lines: list) -> list:
             needle = key_name + "="
             idx = stripped.find(needle)
             while idx >= 0:
-                match_ranges.append((idx, idx + len(needle)))
+                if not _is_inside_env_quote(stripped, idx):
+                    match_ranges.append((idx, idx + len(needle)))
                 idx = stripped.find(needle, idx + len(needle))
 
         split_positions = sorted({
