@@ -22,6 +22,16 @@ function requireHiddenChildOptions(source, needle) {
     `expected ${needle} to wrap child-process options with hiddenWindowsChildOptions`
   )
 }
+function requireWindowsHideTrue(source, needle) {
+  const index = source.indexOf(needle)
+  assert.notEqual(index, -1, `missing call site: ${needle}`)
+  const snippet = source.slice(index, index + 700)
+  assert.match(
+    snippet,
+    /windowsHide:\s*true/,
+    `expected ${needle} child-process options to set windowsHide: true`
+  )
+}
 
 test('desktop background child processes opt into hidden Windows consoles', () => {
   const source = readElectronFile('main.cjs')
@@ -29,6 +39,7 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
 
   requireHiddenChildOptions(source, "execFileSync(\n          'reg'")
+  requireWindowsHideTrue(readElectronFile('backend-probes.cjs'), 'execFileSync(pythonPath')
   requireHiddenChildOptions(source, /execFileSync\(\s*pyExe/)
   requireHiddenChildOptions(source, /spawn\(\s*resolveGitBinary\(\)/)
   requireHiddenChildOptions(source, "execFileSync('taskkill'")
@@ -68,5 +79,5 @@ test('bootstrap PowerShell runner hides Windows console children', () => {
   const source = readElectronFile('bootstrap-runner.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
-  requireHiddenChildOptions(source, 'spawn(ps, fullArgs')
+  requireHiddenChildOptions(source, /spawn\(\s*ps,\s*fullArgs/)
 })
