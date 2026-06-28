@@ -4049,6 +4049,100 @@ class TestBuildCallKwargsToolDedup:
         )
         assert "tools" not in kwargs
 
+    def test_stream_flag_is_forwarded(self):
+        kwargs = _build_call_kwargs(
+            provider="openai", model="gpt-4o", messages=[], stream=True,
+        )
+        assert kwargs["stream"] is True
+
+    def test_stream_stripped_for_anthropic(self):
+        """_build_call_kwargs silently removes stream for anthropic."""
+        kwargs = _build_call_kwargs(
+            provider="anthropic", model="claude-sonnet-4-5-20250929",
+            messages=[], stream=True,
+        )
+        assert "stream" not in kwargs
+
+    def test_stream_stripped_for_minimax(self):
+        """_build_call_kwargs silently removes stream for minimax."""
+        kwargs = _build_call_kwargs(
+            provider="minimax", model="minimax-m1",
+            messages=[], stream=True,
+        )
+        assert "stream" not in kwargs
+
+
+class TestCallLlmStreaming:
+    def test_streaming_chunks_are_collected_into_response_like_object(self):
+        def chunk(text):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
+            )
+
+        fake_client = MagicMock()
+        fake_client.base_url = "https://example.test/v1"
+        fake_client.chat.completions.create.return_value = iter([
+            chunk("hello"),
+            chunk(" "),
+            chunk("world"),
+        ])
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai", "gpt-test", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(fake_client, "gpt-test")),
+        ):
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+            )
+
+        assert resp.choices[0].message.content == "hello world"
+        assert fake_client.chat.completions.create.call_args.kwargs["stream"] is True
+
+    def test_streaming_transient_error_retries_and_collects_second_stream(self):
+        def chunk(text):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
+            )
+
+        fake_client = MagicMock()
+        fake_client.base_url = "https://example.test/v1"
+        fake_client.chat.completions.create.side_effect = [
+            ConnectionError("incomplete chunked read"),
+            iter([chunk("retried"), chunk(" stream")]),
+        ]
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai", "gpt-test", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(fake_client, "gpt-test")),
+        ):
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+            )
+
+        assert resp.choices[0].message.content == "retried stream"
+        assert fake_client.chat.completions.create.call_count == 2
+        assert fake_client.chat.completions.create.call_args.kwargs["stream"] is True
+
+    def test_anthropic_adapter_raises_not_implemented_for_stream(self):
+        """_AnthropicCompletionsAdapter raises NotImplementedError for stream."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        mock_client = MagicMock()
+        adapter = _AnthropicCompletionsAdapter(
+            mock_client, "claude-sonnet-4-5-20250929")
+
+        with pytest.raises(NotImplementedError, match="streaming"):
+            adapter.create(
+                model="claude-sonnet-4-5-20250929",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=100,
+                stream=True,
+            )
+
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):

@@ -1655,6 +1655,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),
+                "stream": True,  # text-only compression; _build_call_kwargs will strip for anthropic/minimax
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
