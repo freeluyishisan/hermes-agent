@@ -29,7 +29,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -237,10 +237,94 @@ def _strip_html(html: str) -> str:
 
 def _extract_email_address(raw: str) -> str:
     """Extract bare email address from 'Name <addr>' format."""
-    match = re.search(r"<([^>]+)>", raw)
-    if match:
-        return match.group(1).strip().lower()
-    return raw.strip().lower()
+    if not raw:
+        return ""
+    decoded = _decode_header_value(raw)
+    _, parsed = parseaddr(decoded)
+    if parsed:
+        return parsed.strip().lower()
+    return decoded.strip().lower()
+
+
+def _authenticated_sender_address(msg: email_lib.message.Message) -> str:
+    """Best-effort sender identity from delivery metadata.
+
+    ``From`` is presentation metadata and can be spoofed by the sender. When
+    an IMAP-delivered message includes ``Return-Path``, prefer it for the
+    allowlist decision because it reflects the SMTP envelope sender recorded
+    by the receiving mail system. If it is absent, fall back to ``From`` so
+    local/test mailboxes and minimal servers continue to work.
+    """
+    return (
+        _extract_email_address(msg.get("Return-Path", ""))
+        or _extract_email_address(msg.get("From", ""))
+    )
+
+
+def _email_domain(address: str) -> str:
+    """Return the lowercased domain portion of an email address."""
+    if "@" not in address:
+        return ""
+    return address.rsplit("@", 1)[1].strip().lower()
+
+
+def _authserv_id(authentication_results: str) -> str:
+    """Return the lowercased authserv-id of an ``Authentication-Results`` value.
+
+    Per RFC 8601 the authserv-id is the first token of the field, optionally
+    followed by a version number, before the first semicolon.
+    """
+    first_field = authentication_results.split(";", 1)[0].strip()
+    if not first_field:
+        return ""
+    return first_field.split()[0].lower()
+
+
+def _trusted_authserv_ids() -> set:
+    """Authserv-ids of the receiving MTA(s) the operator trusts for DMARC.
+
+    Configured via ``EMAIL_TRUSTED_AUTHSERV_ID`` (comma separated).  When unset,
+    the DMARC compatibility path is disabled: an ``Authentication-Results``
+    header cannot be distinguished from a sender-forged one without a trust
+    anchor identifying our own receiving mail system.
+    """
+    raw = os.getenv("EMAIL_TRUSTED_AUTHSERV_ID", "").strip()
+    return {token.strip().lower() for token in raw.split(",") if token.strip()}
+
+
+def _dmarc_aligned_from_passed(msg: email_lib.message.Message, sender_addr: str) -> bool:
+    """Whether our receiving MTA reported DMARC pass aligned to ``From``.
+
+    Relays commonly set a bounce ``Return-Path`` that differs from the human
+    ``From`` address.  A DMARC pass with ``header.from`` matching the visible
+    sender's domain proves the visible sender domain was authenticated.
+
+    ``Authentication-Results`` headers are part of the inbound message and are
+    therefore attacker controllable.  Only a result stamped by our own
+    receiving MTA — identified by a configured trusted authserv-id — can be
+    relied upon; per RFC 8601 the receiver strips inbound forgeries bearing its
+    own authserv-id.  Results from any other (or forged) authserv-id are
+    ignored, and without a configured trust anchor the path stays disabled.
+    """
+    sender_domain = _email_domain(sender_addr)
+    if not sender_domain:
+        return False
+
+    trusted_ids = _trusted_authserv_ids()
+    if not trusted_ids:
+        return False
+
+    for raw_header in msg.get_all("Authentication-Results", []):
+        header = _decode_header_value(raw_header)
+        if _authserv_id(header) not in trusted_ids:
+            continue
+        lowered = header.lower()
+        if "dmarc=pass" not in lowered:
+            continue
+        matches = re.findall(r"header\.from\s*=\s*([a-z0-9._%+-]+(?:@[a-z0-9.-]+)?|[a-z0-9.-]+)", lowered)
+        if any(_email_domain(match) == sender_domain or match.strip().lower() == sender_domain for match in matches):
+            return True
+    return False
 
 
 def _domain_of(address: str) -> str:
@@ -678,6 +762,8 @@ class EmailAdapter(BasePlatformAdapter):
 
                     sender_raw = msg.get("From", "")
                     sender_addr = _extract_email_address(sender_raw)
+                    auth_sender_addr = _authenticated_sender_address(msg)
+                    auth_from_aligned = _dmarc_aligned_from_passed(msg, sender_addr)
                     sender_name = _decode_header_value(sender_raw)
                     # Remove email from name if present
                     if "<" in sender_name:
@@ -708,6 +794,8 @@ class EmailAdapter(BasePlatformAdapter):
                     results.append({
                         "uid": uid,
                         "sender_addr": sender_addr,
+                        "auth_sender_addr": auth_sender_addr,
+                        "auth_from_aligned": auth_from_aligned,
                         "sender_name": sender_name,
                         "subject": subject,
                         "message_id": message_id,
@@ -760,6 +848,8 @@ class EmailAdapter(BasePlatformAdapter):
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
+        auth_sender_addr = (msg_data.get("auth_sender_addr") or sender_addr).lower()
+        auth_from_aligned = bool(msg_data.get("auth_from_aligned"))
 
         # Skip self-messages
         if sender_addr == self._address.lower():
@@ -778,8 +868,25 @@ class EmailAdapter(BasePlatformAdapter):
         allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
         if allowed_raw:
             allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
-            if sender_addr.lower() not in allowed:
-                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+            sender_lower = sender_addr.lower()
+            auth_sender_allowed = auth_sender_addr in allowed
+            dmarc_aligned_from_allowed = sender_lower in allowed and auth_from_aligned
+            if not auth_sender_allowed and not dmarc_aligned_from_allowed:
+                logger.debug(
+                    "[Email] Dropping non-allowlisted email sender at dispatch: "
+                    "from=%s return_path=%s dmarc_aligned_from=%s",
+                    sender_lower,
+                    auth_sender_addr,
+                    auth_from_aligned,
+                )
+                return
+            if auth_sender_allowed and auth_sender_addr != sender_lower:
+                logger.warning(
+                    "[Email] Dropping message with mismatched From and Return-Path: "
+                    "from=%s return_path=%s",
+                    sender_lower,
+                    auth_sender_addr,
+                )
                 return
 
         # Reject spoofed senders. The allowlist (and the gateway's own authz)
