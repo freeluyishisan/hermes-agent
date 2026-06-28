@@ -26,6 +26,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { isMobile } from '@/lib/is-mobile'
 import { slug } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -49,6 +50,13 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const p = t.profiles
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
   const [selectedName, setSelectedName] = useState<null | string>(null)
+  // Mobile master-detail: list first, drill into the selected profile on tap.
+  const mobileStandalone = isMobile()
+  const [mobileDrilled, setMobileDrilled] = useState(false)
+  const selectProfile = (name: string) => {
+    setSelectedName(name)
+    if (mobileStandalone) setMobileDrilled(true)
+  }
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const [deleting, setDeleting] = useState(false)
@@ -144,14 +152,16 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       {!profiles ? (
         <PageLoader label={p.loading} />
       ) : (
-        <OverlaySplitLayout>
+        <OverlaySplitLayout
+          className={mobileStandalone ? (mobileDrilled ? '[&_aside]:hidden' : '[&_main]:hidden') : undefined}
+        >
           <OverlaySidebar>
             <OverlayNewButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
             {profiles.map(profile => (
               <ProfileRow
                 active={selected?.name === profile.name}
                 key={profile.name}
-                onSelect={() => setSelectedName(profile.name)}
+                onSelect={() => selectProfile(profile.name)}
                 profile={profile}
               />
             ))}
@@ -161,6 +171,16 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
           </OverlaySidebar>
 
           <OverlayMain className="px-0">
+            {mobileStandalone && mobileDrilled && (
+              <button
+                aria-label="Back"
+                className="mx-3 mb-2 flex items-center gap-1 self-start rounded-md py-2 text-sm text-(--ui-text-secondary) hover:text-foreground"
+                onClick={() => setMobileDrilled(false)}
+                type="button"
+              >
+                <span aria-hidden>←</span> Profiles
+              </button>
+            )}
             {selected ? (
               <ProfileDetail
                 key={selected.name}

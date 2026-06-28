@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { SearchField } from '@/components/ui/search-field'
+import { isMobile } from '@/lib/is-mobile'
 import { cn } from '@/lib/utils'
 
 interface PageSearchShellProps extends React.ComponentProps<'section'> {
@@ -52,7 +53,10 @@ export function PageSearchShell({
       */}
       <div className="shrink-0">
         {(tabs || !searchHidden) && (
-          <div className="flex items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
+          <div
+            className="flex items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)] data-[mobile=true]:pt-[calc(var(--titlebar-height)+1.5rem)]"
+            data-mobile={isMobile() ? 'true' : undefined}
+          >
             {tabs ? <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">{tabs}</div> : null}
             {!searchHidden && (
               <div className={cn('flex shrink-0 items-center', !tabs && 'flex-1')}>
