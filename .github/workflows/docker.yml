@@ -158,29 +158,44 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      # Log in to ghcr.io so the registry-backed build cache below can be
-      # read (cache-from) on every event and written (cache-to) on
-      # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
-      # the whole job — unlike the gha cache backend's short-lived Azure SAS
-      # token, which expired mid-build on slow cold-cache arm64 runs and
-      # crashed the build before the tests ran (the reason the gha cache
-      # was removed from arm64 PRs in the first place).
+      # Log in to ghcr.io only for non-PR events. Fork PR installations may
+      # lack org-package write permission, and some buildx/registry codepaths
+      # still attempt a write even when the PR step is configured as
+      # cache-from-only. Keep GHCR-backed cache for main/release, but avoid
+      # it entirely on PRs so unrelated code changes do not fail on package
+      # permission policy.
       - name: Log in to ghcr.io (build cache)
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build once, load into the local daemon for testing, then push
-      # by digest below. Reads AND writes the registry-backed cache so the
-      # push reuses layers from this build and the next build starts warm.
+      # Build once, load into the local daemon for smoke testing.
       #
-      # Registry cache (type=registry on ghcr.io) is used instead of the gha
-      # cache that previously broke here: its credential is the job-lifetime
-      # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
-      # token failure mode cannot recur.
-      - name: Build image (arm64, cached publish)
+      # PR builds intentionally avoid the GHCR-backed registry cache. In fork
+      # PRs the workflow installation token may be unable to write the org
+      # package, and the registry-backed build path can still trip that policy
+      # even without an explicit cache-to. Running uncached here is slower but
+      # keeps skills/docs/agent PRs from failing on unrelated package policy.
+      - name: Build image (arm64, smoke test, uncached PR)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE_NAME }}:test
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+
+      # Main/release builds read AND write the registry cache so the digest
+      # push below reuses layers from this smoke-test build, and so the next
+      # PR/main build starts warm.
+      - name: Build image (arm64, smoke test, cached publish)
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
