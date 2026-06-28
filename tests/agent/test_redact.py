@@ -473,6 +473,74 @@ class TestWebUrlsNotRedacted:
         assert "dbpass" not in result
 
 
+class TestDbConnstrDialectDriver:
+    """SQLAlchemy-style dialect+driver connection strings (#43666).
+
+    `postgresql+psycopg://user:PASSWORD@host` previously slipped through
+    _DB_CONNSTR_RE because the scheme alternation required `://` directly
+    after the dialect name (only `mongodb+srv` was special-cased), so the
+    plaintext password persisted to state.db via tool-output file dumps.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "postgresql+psycopg://postgres:s3cretpw@127.0.0.1:5432/postgres",
+            "postgresql+asyncpg://postgres:s3cretpw@db/app",
+            "mysql+pymysql://root:s3cretpw@db:3306/app",
+            "mariadb+mariadbconnector://u:s3cretpw@h/db",
+            "mssql+pyodbc://sa:s3cretpw@h/db",
+            "mongodb+srv://u:s3cretpw@cluster0.mongodb.net/db",
+            "rediss://default:s3cretpw@h:6380/0",
+            "amqps://guest:s3cretpw@h:5671/",
+        ],
+    )
+    def test_dialect_driver_password_redacted(self, text):
+        result = redact_sensitive_text(text)
+        assert "s3cretpw" not in result
+        assert ":***@" in result
+
+    def test_env_assignment_value_redacted(self):
+        """A connstring inside a NAME=value assignment is caught by the
+        connstring rule even when the variable name isn't on the
+        sensitive-name list (e.g. DATABASE_URL)."""
+        text = "DATABASE_URL=postgresql+psycopg://postgres:s3cretpw@127.0.0.1:5432/postgres"
+        result = redact_sensitive_text(text)
+        assert "s3cretpw" not in result
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "redis://:s3cretpw@h:6379/0",
+            "rediss://:s3cretpw@h:6380/0",
+            "amqp://:s3cretpw@h:5672/",
+            "postgresql://:s3cretpw@h/db",
+        ],
+    )
+    def test_empty_username_password_redacted(self, text):
+        """`redis://:password@host` is the canonical pre-ACL Redis password
+        form — the username before the colon may be empty."""
+        result = redact_sensitive_text(text)
+        assert "s3cretpw" not in result
+        assert "://:***@" in result
+
+    def test_connstr_without_password_unchanged(self):
+        text = "postgresql+psycopg://host.example.com:5432/db"
+        assert redact_sensitive_text(text) == text
+
+    def test_connstr_host_port_no_userinfo_unchanged(self):
+        """host:port with no userinfo must not be mistaken for an empty
+        username + password."""
+        text = "redis://h:6379/0"
+        assert redact_sensitive_text(text) == text
+
+    def test_https_userinfo_carveout_preserved(self):
+        """The web-URL userinfo carve-out (TestWebUrlsNotRedacted) must
+        survive the wider DB-scheme alternation."""
+        text = "URL: https://user:opaqueToken@host.example.com/path"
+        assert redact_sensitive_text(text) == text
+
+
 class TestFormBodyRedaction:
     """Form-urlencoded body redaction (k=v&k=v with no other text)."""
 

@@ -201,10 +201,16 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"
 )
 
-# Database connection strings: protocol://user:PASSWORD@host
-# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
+# Database connection strings: dialect[+driver]://[user]:PASSWORD@host
+# Catches postgres, mysql, mariadb, mongodb, mssql, oracle, clickhouse,
+# redis(s) and amqp(s) URLs and redacts the password. The optional
+# `+driver` segment covers SQLAlchemy-style schemes such as
+# postgresql+psycopg, mysql+pymysql or mongodb+srv. The username may be
+# empty — `redis://:password@host` is the canonical pre-ACL Redis
+# password form (#43666).
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mariadb|mongodb|mssql|oracle|clickhouse|rediss?|amqps?)"
+    r"(?:\+[a-z0-9_]+)?://[^:]*:)([^@]+)(@)",
     re.IGNORECASE,
 )
 
