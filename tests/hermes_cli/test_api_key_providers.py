@@ -306,6 +306,26 @@ class TestResolveProvider:
         with pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto")
 
+    def test_auto_does_not_select_vertex_from_google_application_credentials(self, monkeypatch):
+        # GOOGLE_APPLICATION_CREDENTIALS is a generic GCP SDK variable, very
+        # commonly exported for non-inference tooling (bq, gsutil, GKE workload
+        # identity). It must NOT auto-select Vertex for inference. As with the
+        # copilot test, disable Bedrock's boto3 credential-chain fallback so
+        # this exercises the specific behavior, not the Bedrock tail.
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.has_aws_credentials",
+            lambda env=None: False,
+        )
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/Users/dev/keys/gcp-sa.json")
+        with pytest.raises(AuthError, match="No inference provider configured"):
+            resolve_provider("auto")
+
+    def test_auto_detects_vertex_from_vertex_credentials_path(self, monkeypatch):
+        # The dedicated VERTEX_CREDENTIALS_PATH alias is an explicit opt-in and
+        # SHOULD auto-select Vertex.
+        monkeypatch.setenv("VERTEX_CREDENTIALS_PATH", "/Users/dev/keys/vertex-sa.json")
+        assert resolve_provider("auto") == "vertex"
+
 
 # =============================================================================
 # API Key Provider Status tests

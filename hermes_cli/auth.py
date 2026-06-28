@@ -403,6 +403,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="vertex",
+        # Placeholder only — the real endpoint (with project_id + location) is
+        # computed at runtime by agent.vertex_adapter.build_vertex_base_url().
+        # This value is never used to issue a request; see runtime_provider.py.
+        inference_base_url="https://aiplatform.googleapis.com/v1beta1",
+        api_key_env_vars=("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"),
+        base_url_env_var="VERTEX_BASE_URL",
+    ),
     "tencent-tokenhub": ProviderConfig(
         id="tencent-tokenhub",
         name="Tencent TokenHub",
@@ -1597,7 +1608,7 @@ def resolve_provider(
 
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key":
+        if pconfig.auth_type not in ("api_key", "vertex"):
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses
@@ -1607,7 +1618,17 @@ def resolve_provider(
         # also requires explicit selection.
         if pid in {"copilot", "lmstudio"}:
             continue
-        for env_var in pconfig.api_key_env_vars:
+        env_vars = pconfig.api_key_env_vars
+        if pid == "vertex":
+            # GOOGLE_APPLICATION_CREDENTIALS is a generic GCP SDK variable, very
+            # commonly exported for non-inference tooling (bq, gsutil, Cloud
+            # Functions local dev, GKE workload-identity sidecars). Auto-selecting
+            # Vertex for inference just because it's present would hijack those
+            # users, so only auto-detect on the dedicated VERTEX_CREDENTIALS_PATH
+            # alias. Explicit `provider: vertex` config and vertex_adapter's
+            # SA-path resolution still honor GOOGLE_APPLICATION_CREDENTIALS.
+            env_vars = tuple(v for v in env_vars if v != "GOOGLE_APPLICATION_CREDENTIALS")
+        for env_var in env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
 
@@ -6107,6 +6128,13 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def get_vertex_auth_status() -> Dict[str, Any]:
+    """Return auth status for Vertex AI."""
+    from agent.vertex_adapter import get_vertex_credentials
+    token, _ = get_vertex_credentials()
+    return {"logged_in": bool(token), "provider": "vertex"}
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = (provider_id or get_active_provider() or "").strip().lower()
@@ -6126,6 +6154,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_minimax_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
+    if target == "vertex":
+        return get_vertex_auth_status()
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
     # API-key providers
@@ -6301,6 +6331,27 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
         "command": resolved_command or command,
         "args": args,
         "source": "process",
+    }
+
+
+def resolve_vertex_runtime_credentials(
+    credentials_path: Optional[str] = None,
+    region: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve (access_token, base_url) for Vertex AI."""
+    from agent.vertex_adapter import get_vertex_config
+    token, base_url = get_vertex_config(credentials_path, region)
+    if not token or not base_url:
+        raise AuthError(
+            "Vertex AI credentials not found. Set VERTEX_CREDENTIALS_PATH or GOOGLE_APPLICATION_CREDENTIALS.",
+            provider="vertex",
+            code="missing_vertex_creds",
+        )
+    return {
+        "provider": "vertex",
+        "api_key": token,
+        "base_url": base_url,
+        "source": "vertex_adapter",
     }
 
 

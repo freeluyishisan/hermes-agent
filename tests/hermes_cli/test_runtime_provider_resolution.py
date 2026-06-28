@@ -167,6 +167,43 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_vertex_explicit_api_key_uses_creds_url(monkeypatch):
+    """`hermes run --api-key=... --provider=vertex` (no --base-url) must resolve
+    the real SA/ADC URL (project_id + location), not the registry placeholder.
+
+    Regression: previously the placeholder inference_base_url was truthy and
+    shadowed the creds-derived URL, and supplying --api-key skipped credential
+    resolution entirely, so the request went to a project/location-less URL.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "resolve_vertex_runtime_credentials",
+        lambda: {
+            "provider": "vertex",
+            "api_key": "sa-access-token",
+            "base_url": (
+                "https://aiplatform.googleapis.com/v1beta1/projects/"
+                "my-proj/locations/global/endpoints/openapi"
+            ),
+            "source": "vertex_adapter",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="vertex",
+        explicit_api_key="explicit-key",
+    )
+
+    assert resolved["provider"] == "vertex"
+    # Explicit --api-key is preserved...
+    assert resolved["api_key"] == "explicit-key"
+    # ...but the base URL comes from the resolved creds, not the placeholder.
+    assert "projects/my-proj/locations/global" in resolved["base_url"]
+    assert resolved["base_url"].rstrip("/") != "https://aiplatform.googleapis.com/v1beta1"
+
+
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(
@@ -1868,6 +1905,92 @@ def test_named_custom_runtime_no_model_when_absent(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert "model" not in resolved
+
+# ── auto/custom provider override tests ──────────────────────────────────
+
+def test_auto_provider_overrides_base_url_and_api_mode(monkeypatch):
+    """Setting provider: auto should allow base_url and api_mode overrides to apply to any resolved provider."""
+    # Mock resolve_provider to return 'anthropic'
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    
+    # Mock config to use provider: auto with overrides
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "auto",
+            "base_url": "https://proxy.example.com/anthropic",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    
+    # Mock anthropic token resolution
+    monkeypatch.setattr("agent.anthropic_adapter.resolve_anthropic_token", lambda: "test-token")
+    
+    resolved = rp.resolve_runtime_provider(requested="auto")
+    
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == "https://proxy.example.com/anthropic"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["api_key"] == "test-token"
+
+
+def test_custom_provider_overrides_base_url_and_api_mode(monkeypatch):
+    """Setting provider: custom should allow base_url and api_mode overrides to apply to any resolved provider."""
+    # Mock resolve_provider to return 'zai'
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
+    
+    # Mock config to use provider: custom with overrides
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://my-custom-endpoint.com/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+    
+    # Mock API key resolution for zai — return the provider's default URL so
+    # the pool_url_is_default guard allows the config override to apply.
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {"api_key": "zai-key", "base_url": "https://api.z.ai/api/paas/v4"}
+    )
+    
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    
+    assert resolved["provider"] == "zai"
+    assert resolved["base_url"] == "https://my-custom-endpoint.com/v1"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["api_key"] == "zai-key"
+
+
+def test_auto_provider_overrides_nous_base_url(monkeypatch):
+    """Setting provider: auto should allow base_url override for nous."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "auto",
+            "base_url": "https://nous.proxy.local",
+        },
+    )
+    
+    # Mock nous credentials resolution
+    monkeypatch.setattr(
+        rp,
+        "resolve_nous_runtime_credentials",
+        lambda **k: {"api_key": "nous-key", "base_url": "https://api.nous.ai", "source": "portal"}
+    )
+    
+    resolved = rp.resolve_runtime_provider(requested="auto")
+    
+    assert resolved["provider"] == "nous"
+    assert resolved["base_url"] == "https://nous.proxy.local"
+    assert resolved["api_key"] == "nous-key"
 
 
 # ---------------------------------------------------------------------------
