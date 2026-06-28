@@ -2051,6 +2051,7 @@ export function ChatBar({
           setVoiceConversationActive(false)
           void conversation.end()
         },
+        onInterruptResponse: conversation.interruptResponse,
         onStart: () => setVoiceConversationActive(true),
         onStopTurn: conversation.stopTurn,
         onToggleMute: conversation.toggleMute,

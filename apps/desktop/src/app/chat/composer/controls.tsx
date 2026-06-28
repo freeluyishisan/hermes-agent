@@ -33,6 +33,7 @@ interface ConversationProps {
   muted: boolean
   status: ConversationStatus
   onEnd: () => void
+  onInterruptResponse: () => void
   onStart: () => void
   onStopTurn: () => void
   onToggleMute: () => void
@@ -150,6 +151,7 @@ function ConversationPill({
   level,
   muted,
   onEnd,
+  onInterruptResponse,
   onStopTurn,
   onToggleMute,
   status
@@ -199,6 +201,23 @@ function ConversationPill({
             onStopTurn()
           }}
           title={c.stopListening}
+          type="button"
+          variant="ghost"
+        >
+          <Square className="fill-current" size={11} />
+          <span>{c.stopShort}</span>
+        </Button>
+      )}
+      {speaking && (
+        <Button
+          aria-label={c.stop}
+          className="h-(--composer-control-size) shrink-0 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          disabled={disabled}
+          onClick={() => {
+            triggerHaptic('selection')
+            onInterruptResponse()
+          }}
+          title={c.stop}
           type="button"
           variant="ghost"
         >
