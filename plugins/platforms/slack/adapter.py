@@ -416,11 +416,40 @@ class SlackAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    # Native Block Kit ``markdown`` blocks (CommonMark incl. tables) for agent
+    # replies. Default-on; falls back to legacy ``text=`` + ``mrkdwn=true`` when
+    # ``gateway.slack.markdown_blocks: false`` (see _markdown_blocks_enabled).
+    supports_markdown_blocks = True
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
     # "!" to "/" for known commands (see _handle_slack_message), so "!" is
     # the prefix that works everywhere — instruction text must show it.
     typed_command_prefix = "!"
+
+    # When markdown blocks are enabled, the stream consumer must finalize a
+    # streamed reply by sending a *fresh* Block Kit message and best-effort
+    # deleting the raw legacy-mrkdwn preview, rather than final-editing the
+    # preview (which can silently fail on rich Slack finals and leave the raw
+    # preview as the visible "final" content). The adapter opts in via two
+    # cooperating hooks (see gateway/platforms/base.py):
+    #   * ``REQUIRES_EDIT_FINALIZE`` forces the consumer to route a finalize
+    #     tick through ``_send_or_edit`` even when the streamed preview text
+    #     matches the final answer — without this, the "skip if same" gate
+    #     short-circuits and the fresh-final path never runs (#53893 item 5).
+    #   * ``prefers_fresh_final_streaming(content)`` returns True when blocks
+    #     are enabled, sending the finalize through ``_try_fresh_final``.
+    # Both are gated on ``_markdown_blocks_enabled()`` so users who disable
+    # blocks get the legacy edit-in-place path with no behavior change.
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N815
+        return self._markdown_blocks_enabled()
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return self._markdown_blocks_enabled()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -794,23 +823,32 @@ class SlackAdapter(BasePlatformAdapter):
         the user already saw the initial ack, so a delivery failure here
         is non-critical.
         """
-        formatted = self.format_message(content)
+        payload = self._send_payload(content)
+        is_blocks_mode = "blocks" in payload
         # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
-        # response_url replaces a single ephemeral ack, so multi-chunk isn't
-        # possible.  Long responses are rare for command replies.
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        text = chunks[0] if chunks else formatted
-        payload = {
+        # Truncate the fallback text to MAX_MESSAGE_LENGTH and use only the first
+        # chunk — the response_url replaces a single ephemeral ack, so
+        # multi-chunk isn't possible. Long responses are rare for command
+        # replies. In markdown-block mode, keep blocks (already chunked by
+        # _build_markdown_blocks at the per-block 12k limit) and send a single
+        # message's worth so the payload stays well under the response_url cap.
+        chunks = self.truncate_message(payload["text"], self.MAX_MESSAGE_LENGTH)
+        text = chunks[0] if chunks else payload["text"]
+        url_payload = {
             "response_type": "ephemeral",
             "replace_original": True,
             "text": text,
         }
+        if is_blocks_mode:
+            blocks = payload["blocks"]
+            if len(blocks) > self._MARKDOWN_BLOCK_MAX_BLOCKS:
+                blocks = blocks[: self._MARKDOWN_BLOCK_MAX_BLOCKS]
+            url_payload["blocks"] = blocks
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.post(
                     ctx["response_url"],
-                    json=payload,
+                    json=url_payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
@@ -1247,11 +1285,38 @@ class SlackAdapter(BasePlatformAdapter):
                     content,
                 )
 
-            # Convert standard markdown → Slack mrkdwn
-            formatted = self.format_message(content)
-
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            # Build the message payload. In markdown-block mode this
+            # produces a ``blocks`` list (native rendering, incl. tables);
+            # otherwise it produces ``text`` + ``mrkdwn`` (legacy path).
+            payload = self._send_payload(content)
+            # Chunk per-block payload by *block* count (one markdown block
+            # per chunk); legacy mrkdwn payload chunks by MAX_MESSAGE_LENGTH.
+            is_blocks_mode = "blocks" in payload
+            if is_blocks_mode:
+                block_chunks = self._chunk_blocks(
+                    payload["blocks"],
+                    self._MARKDOWN_BLOCK_MAX_BLOCKS,
+                    # Slack's per-payload cumulative limit on markdown-block
+                    # text is 12,000 chars across ALL blocks in the message,
+                    # not per block (#53893 item 2, tw0316 review). Without
+                    # this bound, two sub-12k blocks would be packed into one
+                    # over-limit chat_postMessage and Slack would reject it
+                    # with markdown_text_too_long.
+                    max_cumulative_chars=self._MARKDOWN_BLOCK_CHAR_LIMIT,
+                )
+                text_fallback = payload.get("text", "")
+                chunks_iterable = [
+                    {
+                        "text": text_fallback if i == 0 else "",
+                        "blocks": bt,
+                    }
+                    for i, bt in enumerate(block_chunks)
+                ]
+            else:
+                chunks = self.truncate_message(
+                    payload["text"], self.MAX_MESSAGE_LENGTH
+                )
+                chunks_iterable = [{"text": c} for c in chunks]
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -1260,19 +1325,71 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            for i, chunk in enumerate(chunks):
+            attempted_legacy_fallback = False
+            for i, chunk_kwargs in enumerate(chunks_iterable):
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
-                    "mrkdwn": True,
+                    **chunk_kwargs,
                 }
+                # Use mrkdwn only when emitting plain text (legacy path).
+                if not is_blocks_mode:
+                    kwargs["mrkdwn"] = True
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                try:
+                    last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                except Exception as e:
+                    # Slack rejected a markdown-block payload? Retry once
+                    # with the legacy text= + mrkdwn=true path. This catches
+                    # invalid_blocks / markdown_text_too_long / msg_too_long
+                    # (the family of errors that means "blocks not accepted
+                    # here", not auth/network failures). #53893 item 3.
+                    if (
+                        is_blocks_mode
+                        and not attempted_legacy_fallback
+                        and self._is_markdown_block_rejection(e)
+                    ):
+                        attempted_legacy_fallback = True
+                        err_code = "?"
+                        resp = getattr(e, "response", None)
+                        if isinstance(resp, dict):
+                            err_code = resp.get("error", "?")
+                        logger.info(
+                            "[Slack] markdown-block payload rejected (%s); "
+                            "retrying send() as legacy mrkdwn",
+                            err_code,
+                        )
+                        legacy_payload = self.format_message(content)
+                        legacy_chunks = self.truncate_message(
+                            legacy_payload, self.MAX_MESSAGE_LENGTH
+                        )
+                        # Replace the remaining chunk plan with legacy text
+                        # sends so we don't keep poking the rejected blocks
+                        # path. The first legacy send re-uses the thread +
+                        # broadcast flags from the original first chunk.
+                        chunks_iterable = [
+                            {"text": c, "mrkdwn": True}
+                            for c in legacy_chunks
+                        ]
+                        # Restart the loop at i=0 with legacy chunks; preserve
+                        # thread_ts/broadcast for the first message only.
+                        for j, legacy_kwargs in enumerate(chunks_iterable):
+                            legacy_kwargs = {
+                                "channel": chat_id,
+                                "mrkdwn": True,
+                                **legacy_kwargs,
+                            }
+                            if thread_ts:
+                                legacy_kwargs["thread_ts"] = thread_ts
+                                if broadcast and j == 0:
+                                    legacy_kwargs["reply_broadcast"] = True
+                            last_result = await self._get_client(chat_id).chat_postMessage(**legacy_kwargs)
+                        break
+                    raise
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1316,14 +1433,18 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="chat_id and user_id are required")
 
         try:
-            formatted = self.format_message(content)
+            payload = self._send_payload(content)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            is_blocks_mode = "blocks" in payload
             kwargs = {
                 "channel": chat_id,
                 "user": user_id,
-                "text": formatted,
-                "mrkdwn": True,
+                "text": payload["text"],
             }
+            if is_blocks_mode:
+                kwargs["blocks"] = payload["blocks"]
+            else:
+                kwargs["mrkdwn"] = True
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
@@ -1349,12 +1470,41 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
-            formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
-                channel=chat_id,
-                ts=message_id,
-                text=formatted,
-            )
+            payload = self._send_payload(content)
+            update_kwargs = {
+                "channel": chat_id,
+                "ts": message_id,
+                "text": payload["text"],
+            }
+            if "blocks" in payload:
+                update_kwargs["blocks"] = payload["blocks"]
+            try:
+                await self._get_client(chat_id).chat_update(**update_kwargs)
+            except Exception as e:
+                # Slack rejected the markdown-block payload — retry once with
+                # the legacy text= + mrkdwn=true path AND clear stale blocks so
+                # Slack doesn't render the prior blocks alongside the new text
+                # on clients that already cached them (#53893 item 3).
+                if "blocks" in payload and self._is_markdown_block_rejection(e):
+                    err_code = "?"
+                    resp = getattr(e, "response", None)
+                    if isinstance(resp, dict):
+                        err_code = resp.get("error", "?")
+                    logger.info(
+                        "[Slack] markdown-block edit rejected (%s); "
+                        "retrying chat_update as legacy mrkdwn with blocks=[]",
+                        err_code,
+                    )
+                    legacy = self.format_message(content)[: self.MAX_MESSAGE_LENGTH]
+                    await self._get_client(chat_id).chat_update(
+                        channel=chat_id,
+                        ts=message_id,
+                        text=legacy,
+                        mrkdwn=True,
+                        blocks=[],
+                    )
+                else:
+                    raise
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)
@@ -1779,6 +1929,243 @@ class SlackAdapter(BasePlatformAdapter):
             text = text.replace(key, placeholders[key])
 
         return text
+
+    # ----- Markdown block mode (native Block Kit rendering) -----
+
+    # Slack's ``markdown`` block (added to Block Kit in 2025) accepts a
+    # standard markdown string — incl. tables, fenced code, task lists,
+    # headers, links — and Slack renders it natively instead of forcing
+    # clients to interpret the proprietary ``mrkdwn`` mini-language.
+    #
+    # Cumulative limit for all markdown blocks in a single message
+    # payload is 12,000 characters (per the Block Kit spec). A single
+    # ``chat.postMessage`` may include up to 50 blocks total.
+    _MARKDOWN_BLOCK_CHAR_LIMIT = 12_000
+    _MARKDOWN_BLOCK_MAX_BLOCKS = 50
+
+    def _markdown_blocks_enabled(self) -> bool:
+        """Whether to send agent replies as native Slack ``markdown`` blocks.
+
+        Default: enabled. Disable in config via
+        ``gateway.slack.markdown_blocks: false`` to fall back to the
+        legacy ``text=...`` + ``mrkdwn=true`` path (older workspaces or
+        clients that don't yet render the markdown block).
+        """
+        # Defensive against bare ``SlackAdapter.__new__(SlackAdapter)``
+        # instances used by ``_standalone_send`` (cron out-of-process sender),
+        # which carry no ``config`` attribute — treat missing config as the
+        # default-on state so the feature stays consistent with full adapters.
+        cfg = getattr(self, "config", None)
+        if cfg is None:
+            return True
+        raw = cfg.extra.get("markdown_blocks") if hasattr(cfg, "extra") else None
+        if raw is None:
+            return True
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _build_markdown_blocks(self, content: str) -> list:
+        """Wrap raw markdown in Slack Block Kit ``markdown`` blocks.
+
+        Splits at the 12k-char cumulative limit so each message payload
+        stays within Slack's cap. Returns an empty list when the content
+        is empty (caller should fall back to plain text).
+        """
+        if not content or not content.strip():
+            return []
+
+        # Neutralize Slack entity syntax before it reaches Slack. Assistant
+        # output can contain literal `<@U123>` / `<!channel>` / `<#C123>` and
+        # the bot would actively ping users/channels if those survived to the
+        # Block Kit payload. CommonMark links are unchanged (#53893 item 4).
+        content = self._neutralize_slack_entities(content)
+        chunks = self.truncate_message(
+            content, self._MARKDOWN_BLOCK_CHAR_LIMIT
+        )
+        # Slack caps a single message at 50 blocks; we emit one markdown
+        # block per chunk. If a reply would exceed 50 chunks, hard-cap to
+        # the first 49 and append a final "...(truncated)..." marker block.
+        if len(chunks) > self._MARKDOWN_BLOCK_MAX_BLOCKS:
+            chunks = chunks[: self._MARKDOWN_BLOCK_MAX_BLOCKS - 1] + [
+                chunks[-1][:100] + " …(truncated)…"
+            ]
+
+        return [
+            {"type": "markdown", "text": chunk}
+            for chunk in chunks
+            if chunk and chunk.strip()
+        ]
+
+    def _chunk_blocks(
+        self,
+        blocks: list,
+        max_per_msg: int,
+        max_cumulative_chars: int | None = None,
+    ) -> list:
+        """Yield sublists of ``blocks`` each with at most ``max_per_msg`` entries.
+
+        Slack caps a single ``chat.postMessage`` at 50 blocks, so a long reply
+        that produced more than 50 markdown blocks is delivered across multiple
+        back-to-back messages. This is a plain list-slicing helper — it returns
+        a list of chunks for easy indexing/``enumerate`` at the call site.
+
+        ``max_cumulative_chars`` — when provided — further bounds each chunk so
+        the *cumulative* text carried by its markdown blocks stays within the
+        per-payload limit Slack enforces (12,000 chars across all markdown
+        blocks in a single ``chat_postMessage``, not per block). Without this,
+        two sub-12k blocks would be packed into one over-limit payload (#53893
+        item 2, tw0316 review).
+        """
+        if max_per_msg <= 0 and max_cumulative_chars is None:
+            return [list(blocks)] if blocks else []
+        if not blocks:
+            return []
+        chunks: list = []
+        current: list = []
+        current_chars = 0
+        for block in blocks:
+            block_chars = len(block.get("text", "")) if isinstance(block, dict) else 0
+            over_count = max_per_msg > 0 and len(current) + 1 > max_per_msg
+            over_chars = (
+                max_cumulative_chars is not None
+                and current
+                and current_chars + block_chars > max_cumulative_chars
+            )
+            if over_count or over_chars:
+                chunks.append(current)
+                current = []
+                current_chars = 0
+            current.append(block)
+            current_chars += block_chars
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _send_payload(
+        self,
+        content: str,
+    ) -> dict:
+        """Build the per-send kwargs for either markdown-block or mrkdwn mode.
+
+        Returns a dict suitable for ``chat.postMessage`` /
+        ``chat_postEphemeral`` that contains either:
+
+        * ``text`` (mrkdwn-rendered, legacy path), or
+        * ``text`` (plain-text fallback for notifications) + ``blocks``
+          (a list of ``markdown`` blocks).
+
+        Slack requires ``text`` in both cases for notifications, screen
+        readers, and clients that don't render blocks. The fallback text
+        is a stripped copy of the raw markdown so it stays readable.
+        """
+        if self._markdown_blocks_enabled():
+            blocks = self._build_markdown_blocks(content)
+            if blocks:
+                # Slack rejects "&lt;"-style entities inside a markdown
+                # block (it's CommonMark, not mrkdwn), so we do NOT call
+                # format_message here — pass the raw markdown through and
+                # let Slack's renderer handle escaping.
+                fallback = self._strip_markdown_for_fallback(content)
+                return {"text": fallback, "blocks": blocks}
+
+        # Legacy path: convert to Slack mrkdwn syntax.
+        return {"text": self.format_message(content)}
+
+    # Slack entity syntax: ``<@U123>``, ``<!channel>``, ``<#C123>``, optionally
+    # with a ``|label`` suffix (``<@U123|name>``, ``<#C123|general>``). If
+    # reached by Slack as-is, the bot actively pings users / channels / special
+    # groups. This pattern matches only the entity forms — CommonMark links
+    # (``[label](url)``) and bare ``<`` (e.g. in code spans) are untouched.
+    _SLACK_ENTITY_RE = re.compile(
+        r"<([!#@])(?:[A-Za-z0-9._-]+(?:\|[^>]*)?)>"
+    )
+
+    @classmethod
+    def _neutralize_slack_entities(cls, text: str) -> str:
+        r"""Replace Slack entity syntax with a form Slack won't parse as a ping.
+
+        ``<@U123>`` becomes ``<\@U123>`` (backslash escape keeps the chars
+        visible to the reader but breaks Slack's parser). Same for
+        ``<!channel>``, ``<#C123>``, and their ``|label`` variants.
+        CommonMark links and other angle brackets are not affected
+        (#53893 item 4, tw0316 review).
+        """
+        return cls._SLACK_ENTITY_RE.sub(r"<\\\1", text)
+
+    @staticmethod
+    def _is_markdown_block_rejection(e: BaseException) -> bool:
+        """True if Slack rejected a markdown-block payload worth a legacy retry.
+
+        SlackApiError carries a ``.response`` dict with an ``error`` field set
+        to one of these codes when a Block Kit payload is malformed or too
+        large. They're recoverable by retrying the legacy ``text=`` +
+        ``mrkdwn=true`` path (#53893 item 3, tw0316 review).
+
+        Non-markdown errors (network failures, auth errors, rate limits) must
+        NOT match — those are not mitigated by switching to mrkdwn and the
+        retry would only double the failure.
+        """
+        recoverable_codes = {
+            "invalid_blocks",
+            "markdown_text_too_long",
+            "msg_too_long",
+        }
+        # SlackApiError.response is a dict; our test helper mirrors the shape.
+        resp = getattr(e, "response", None)
+        if isinstance(resp, dict) and resp.get("error") in recoverable_codes:
+            return True
+        # Fallback: some errors surface as bare message strings. Match any
+        # known code substring in the message so SDK-version differences
+        # (or plain ValueError wraps from slack-bolt adapters) still retry.
+        msg = str(e)
+        return any(code in msg for code in recoverable_codes)
+
+    @staticmethod
+    def _strip_markdown_for_fallback(content: str) -> str:
+        """Reduce markdown to a compact plain-text fallback for ``text=``.
+
+        Slack uses ``text`` for push notifications, screen readers, and
+        clients that don't render blocks — it should be readable, not
+        necessarily a faithful round-trip. We strip the most common
+        markdown sigils inline (leaving the readable text) instead of
+        doing a full AST walk. Bounded to ~3000 chars so push
+        notifications don't blow the payload.
+        """
+        if not content:
+            return ""
+        import re as _re
+
+        text = content
+        # Drop fenced code blocks entirely (replace with a marker)
+        text = _re.sub(r"```[^\n]*\n[\s\S]*?```", " [code block] ", text)
+        # Strip inline code backticks
+        text = _re.sub(r"`([^`]+)`", r"\1", text)
+        # Strip link syntax → show label
+        text = _re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+        # Strip image syntax → show alt
+        text = _re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
+        # Strip emphasis / bold markers
+        text = _re.sub(r"\*{1,3}([^*\n]+?)\*{1,3}", r"\1", text)
+        text = _re.sub(r"_{1,3}([^_\n]+?)_{1,3}", r"\1", text)
+        text = _re.sub(r"~~([^~\n]+?)~~", r"\1", text)
+        # Strip header hashes
+        text = _re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=_re.MULTILINE)
+        # Strip list markers
+        text = _re.sub(
+            r"^\s*([-*+]|\d+\.)\s+", "", text, flags=_re.MULTILINE
+        )
+        # Strip blockquote markers
+        text = _re.sub(r"^\s*>+\s?", "", text, flags=_re.MULTILINE)
+        # Strip horizontal rules
+        text = _re.sub(r"^\s*-{3,}\s*$", "", text, flags=_re.MULTILINE)
+        # Collapse whitespace
+        text = _re.sub(r"\n{3,}", "\n\n", text)
+        text = text.strip()[:3000]
+        # Neutralize Slack entity syntax in the fallback `text=` field too:
+        # Slack parses `<@U123>` / `<!channel>` / `<#C123>` here the same way
+        # it does in the markdown block, and mrkdwn is enabled by default on
+        # the fallback path, so leaving these intact would ping users /
+        # channels on clients that don't render blocks (#53893 item 4).
+        return SlackAdapter._neutralize_slack_entities(text)
 
     # ----- Reactions -----
 
@@ -4037,16 +4424,23 @@ async def _standalone_send(
     if not token:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
 
-    formatted = message
-    if message:
-        try:
-            _fmt_adapter = SlackAdapter.__new__(SlackAdapter)
-            formatted = _fmt_adapter.format_message(message)
-        except Exception:
-            logger.debug(
-                "Failed to apply Slack mrkdwn formatting in _standalone_send",
-                exc_info=True,
-            )
+    # Use the same payload builder as the in-process adapter so cron-delivered
+    # messages render identically (markdown blocks when enabled, mrkdwn
+    # otherwise). The throwaway ``__new__`` instance has no ``config`` attribute,
+    # but ``_markdown_blocks_enabled`` is defensive about that and defaults the
+    # feature on — matching full adapter behavior.
+    body = message
+    try:
+        _fmt_adapter = SlackAdapter.__new__(SlackAdapter)
+        body = _fmt_adapter._send_payload(message) if message else {"text": ""}
+    except Exception:
+        logger.debug(
+            "Failed to build Slack payload in _standalone_send",
+            exc_info=True,
+        )
+        body = {"text": message} if message else {"text": ""}
+
+    is_blocks_mode = isinstance(body, dict) and "blocks" in body
 
     try:
         import aiohttp
@@ -4066,7 +4460,14 @@ async def _standalone_send(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
         ) as session:
-            payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
+            payload = {"channel": chat_id, "text": body.get("text", "")}
+            if is_blocks_mode:
+                blocks = body["blocks"]
+                if len(blocks) > SlackAdapter._MARKDOWN_BLOCK_MAX_BLOCKS:
+                    blocks = blocks[: SlackAdapter._MARKDOWN_BLOCK_MAX_BLOCKS]
+                payload["blocks"] = blocks
+            else:
+                payload["mrkdwn"] = True
             if thread_id:
                 payload["thread_ts"] = thread_id
             async with session.post(
@@ -4214,8 +4615,13 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     existing env-driven model and owns the YAML→env translation here, next to
     the adapter that consumes it. Env vars take precedence over YAML — every
     assignment is guarded by ``not os.getenv(...)`` so explicit env vars
-    survive a config.yaml update. Returns ``None`` because no extras are
-    seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+    survive a config.yaml update.
+
+    Returns a dict of keys to bridge into ``PlatformConfig.extra`` (or None
+    when no extras apply). Currently bridges ``markdown_blocks`` — the
+    documented opt-out is read by ``_markdown_blocks_enabled()`` from
+    ``config.extra``, not from an env var, so it must be returned here to
+    take effect (#53893).
     """
     if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
@@ -4235,7 +4641,17 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    # Bridge the documented ``markdown_blocks`` opt-out into
+    # ``PlatformConfig.extra`` so ``_markdown_blocks_enabled()`` honours it.
+    # The adapter reads its runtime enable/disable state via
+    # ``config.extra.get("markdown_blocks")`` (see ``_markdown_blocks_enabled``),
+    # not via an env var, so the YAML keys above (which only seed SLACK_* env)
+    # leave the flag silently dropped — returning None here makes the documented
+    # config opt-out a no-op (#53893 item 1, tw0316 review).
+    extras: dict = {}
+    if "markdown_blocks" in slack_cfg:
+        extras["markdown_blocks"] = slack_cfg["markdown_blocks"]
+    return extras or None  # type: ignore[return-value]
 
 
 def _is_connected(config) -> bool:
