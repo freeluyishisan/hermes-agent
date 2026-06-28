@@ -7,6 +7,8 @@ import json
 from copy import deepcopy
 from typing import Any
 
+from hermes_constants import parse_reasoning_effort
+
 MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
 DEFAULT_MOA_PRESET_NAME = "default"
 
@@ -42,6 +44,19 @@ def _coerce_int(value: Any, default: int) -> int:
             return default
 
 
+def _clean_reasoning_effort(value: Any) -> str:
+    """Return a supported reasoning effort string or ``""``.
+
+    MoA presets store the human-readable effort level, not the provider request
+    body. Runtime code converts the string through ``parse_reasoning_effort``
+    so it stays in lockstep with the regular ``/reasoning`` levels.
+    """
+    effort = str(value or "").strip().lower()
+    if not effort:
+        return ""
+    return effort if parse_reasoning_effort(effort) is not None else ""
+
+
 def _clean_slot(slot: Any) -> dict[str, str] | None:
     if not isinstance(slot, dict):
         return None
@@ -65,6 +80,8 @@ def _default_preset() -> dict[str, Any]:
         "aggregator": deepcopy(DEFAULT_MOA_AGGREGATOR),
         "reference_temperature": 0.6,
         "aggregator_temperature": 0.4,
+        "reference_reasoning_effort": "",
+        "aggregator_reasoning_effort": "",
         "max_tokens": 4096,
         "enabled": True,
     }
@@ -93,6 +110,8 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "aggregator": aggregator,
         "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
         "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
+        "reference_reasoning_effort": _clean_reasoning_effort(raw.get("reference_reasoning_effort")),
+        "aggregator_reasoning_effort": _clean_reasoning_effort(raw.get("aggregator_reasoning_effort")),
         "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
     }
 
@@ -138,6 +157,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "aggregator": deepcopy(active["aggregator"]),
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
+        "reference_reasoning_effort": active["reference_reasoning_effort"],
+        "aggregator_reasoning_effort": active["aggregator_reasoning_effort"],
         "max_tokens": active["max_tokens"],
         "enabled": active["enabled"],
     }

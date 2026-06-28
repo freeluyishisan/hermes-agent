@@ -2115,6 +2115,8 @@ export interface MoaConfigResponse {
     aggregator: MoaModelSlot;
     reference_temperature: number;
     aggregator_temperature: number;
+    reference_reasoning_effort: string;
+    aggregator_reasoning_effort: string;
     max_tokens: number;
     enabled: boolean;
   }>;
@@ -2122,6 +2124,8 @@ export interface MoaConfigResponse {
   aggregator: MoaModelSlot;
   reference_temperature: number;
   aggregator_temperature: number;
+  reference_reasoning_effort: string;
+  aggregator_reasoning_effort: string;
   max_tokens: number;
   enabled: boolean;
 }

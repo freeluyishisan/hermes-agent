@@ -874,6 +874,8 @@ class MoaPresetPayload(BaseModel):
     aggregator: MoaModelSlot = MoaModelSlot()
     reference_temperature: float = 0.6
     aggregator_temperature: float = 0.4
+    reference_reasoning_effort: str = ""
+    aggregator_reasoning_effort: str = ""
     max_tokens: int = 4096
     enabled: bool = True
 
@@ -888,6 +890,8 @@ class MoaConfigPayload(BaseModel):
     aggregator: MoaModelSlot = MoaModelSlot()
     reference_temperature: float = 0.6
     aggregator_temperature: float = 0.4
+    reference_reasoning_effort: str = ""
+    aggregator_reasoning_effort: str = ""
     max_tokens: int = 4096
     enabled: bool = True
     profile: Optional[str] = None
@@ -4020,6 +4024,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                             "aggregator": preset.aggregator.dict(),
                             "reference_temperature": preset.reference_temperature,
                             "aggregator_temperature": preset.aggregator_temperature,
+                            "reference_reasoning_effort": preset.reference_reasoning_effort,
+                            "aggregator_reasoning_effort": preset.aggregator_reasoning_effort,
                             "max_tokens": preset.max_tokens,
                             "enabled": preset.enabled,
                         }
@@ -4032,6 +4038,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     "aggregator": body.aggregator.dict(),
                     "reference_temperature": body.reference_temperature,
                     "aggregator_temperature": body.aggregator_temperature,
+                    "reference_reasoning_effort": body.reference_reasoning_effort,
+                    "aggregator_reasoning_effort": body.aggregator_reasoning_effort,
                     "max_tokens": body.max_tokens,
                     "enabled": body.enabled,
                 }
