@@ -29,6 +29,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearClarifyRequest } from '@/store/clarify'
 import { openCommandPalettePage } from '@/store/command-palette'
+import { setPreviewTarget, type PreviewTarget } from '@/store/preview'
 import {
   $composerAttachments,
   clearComposerAttachments,
@@ -1142,42 +1143,63 @@ export function usePromptActions({
           }
         },
         // /profile selects which profile new chats open in — no app relaunch.
-        // A profile is per-session now, so an existing thread can't change its
-        // profile mid-stream; `/profile <name>` points the next new chat (and
-        // the current empty draft) at that profile's backend.
-        profile: async ({ arg }) => {
-          const target = arg.trim()
-          const current = normalizeProfileKey($activeGatewayProfile.get())
+                // A profile is per-session now, so an existing thread can't change its
+                profile: async ({ arg, command, recordInput, sessionHint }) => {
+                  const sid = sessionHint || activeSessionIdRef.current
+                                    const profileName = arg.trim()
 
-          if (!target) {
-            notify({ kind: 'success', message: copy.profileStatus(current) })
+                                    if (!profileName) {
+                                      notify({ kind: 'error', message: 'Please provide a profile name' })
+                                      return
+                                    }
 
-            return
-          }
+                                    // No session to print into yet — surface it as a toast instead of
+                                    // spinning up a backend session just to change the theme.
+                                    if (!sid) {
+                                      notify({ kind: 'success', message: `Profile for new chats set to: ${profileName}` })
+                                      return
+                                    }
 
-          try {
-            const { profiles } = await getProfiles()
-            const match = profiles.find(profile => profile.name === target)
+                                    try {
+                                      const { profiles } = await getProfiles()
+                                      const match = profiles.find(profile => profile.name === profileName)
 
-            if (!match) {
-              notify({
-                kind: 'error',
-                title: copy.unknownProfile,
-                message: copy.noProfileNamed(target, profiles.map(profile => profile.name).join(', '))
-              })
+                                      if (!match) {
+                                        notify({
+                                          kind: 'error',
+                                          title: copy.unknownProfile,
+                                          message: copy.noProfileNamed(profileName, profiles.map(profile => profile.name).join(', '))
+                                        })
 
-              return
-            }
+                                        return
+                                      }
 
-            const key = normalizeProfileKey(match.name)
+                                      const key = normalizeProfileKey(match.name)
 
-            $newChatProfile.set(key)
-            await ensureGatewayProfile(key)
-            notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
-          } catch (err) {
-            notifyError(err, copy.setProfileFailed)
-          }
-        },
+                                      $newChatProfile.set(key)
+                                      await ensureGatewayProfile(key)
+                                      notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
+                                    } catch (err) {
+                                      notifyError(err, copy.setProfileFailed)
+                                    }
+                },
+                file: async ({ arg }) => {
+                  const filePath = arg.trim()
+                  if (!filePath) {
+                    notify({ kind: 'error', message: 'Please provide a file path' })
+                    return
+                  }
+
+                  const target: PreviewTarget = {
+                    kind: 'file',
+                    label: filePath,
+                    url: filePath,
+                    path: filePath,
+                    source: 'explicit-link',
+                  }
+
+                  setPreviewTarget(target)
+                },
         skin: async ({ arg, command, recordInput, sessionHint }) => {
           const sid = sessionHint || activeSessionIdRef.current
           const message = handleSkinCommand(arg)
