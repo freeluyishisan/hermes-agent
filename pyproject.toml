@@ -239,6 +239,7 @@ termux-all = [
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
+xmpp = ["slixmpp==1.16.0", "aiohttp==3.13.4"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525; exact-pinned to match tools/lazy_deps.py
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with
