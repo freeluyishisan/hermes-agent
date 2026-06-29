@@ -865,6 +865,11 @@ class PhotonAdapter(BasePlatformAdapter):
                 text=True,
                 timeout=10,
                 check=False,
+                # Windows: suppress the brief console flash this short-lived
+                # node patch run would otherwise pop on every sidecar start.
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                ),
             )
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
@@ -883,6 +888,11 @@ class PhotonAdapter(BasePlatformAdapter):
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=(sys.platform != "win32"),
+            # Windows: run the persistent sidecar headless so it does not open
+            # (or leave) a visible console window.
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            ),
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.
