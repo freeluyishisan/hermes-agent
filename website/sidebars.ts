@@ -755,6 +755,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/acp-internals',
             'developer-guide/cron-internals',
             'developer-guide/trajectory-format',
+            'developer-guide/agent-learning-loop',
           ],
         },
       ],
