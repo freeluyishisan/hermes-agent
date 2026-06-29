@@ -55,6 +55,9 @@ def _make_compressor():
     c._context_probed = False
     c._last_compression_savings_pct = 100.0
     c._ineffective_compression_count = 0
+    c._aux_compression_context_length = 0
+    c._aux_context_overflow_warned = False
+    c._threshold_was_auto_lowered = False
     c._last_summary_error = None
     c._last_summary_dropped_count = 0
     c._last_summary_fallback_used = False
