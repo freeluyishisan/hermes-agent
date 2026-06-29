@@ -1143,8 +1143,9 @@ describe('createGatewayEventHandler', () => {
       const onEvent = createGatewayEventHandler(ctx)
 
       patchUiState({ sid: 'sess-1' })
-      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: {}, session_id: 'sess-1', type: 'message.start' } as any)
       onEvent({
+        session_id: 'sess-1',
         payload: {
           context: 'pre',
           name: 'search',
@@ -1164,9 +1165,10 @@ describe('createGatewayEventHandler', () => {
         sys: ctx.system.sys
       })
 
-      onEvent({ payload: { text: 'still thinking…' }, type: 'reasoning.delta' } as any)
+      onEvent({ payload: { text: 'still thinking…' }, session_id: 'sess-1', type: 'reasoning.delta' } as any)
       // Post-interrupt tool.start with a todos payload — must NOT mutate todos.
       onEvent({
+        session_id: 'sess-1',
         payload: {
           context: 'post',
           name: 'browser',
@@ -1177,11 +1179,11 @@ describe('createGatewayEventHandler', () => {
       } as any)
       // Late tool.generating must NOT push a 'drafting …' line into the trail.
       const trailBefore = getTurnState().turnTrail.length
-      onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
+      onEvent({ payload: { name: 'browser' }, session_id: 'sess-1', type: 'tool.generating' } as any)
       expect(getTurnState().turnTrail.length).toBe(trailBefore)
-      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
-      onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
-      onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
+      onEvent({ payload: { name: 'browser', preview: 'loading' }, session_id: 'sess-1', type: 'tool.progress' } as any)
+      onEvent({ payload: { summary: 'done', tool_id: 't-2' }, session_id: 'sess-1', type: 'tool.complete' } as any)
+      onEvent({ payload: { text: 'late chunk' }, session_id: 'sess-1', type: 'message.delta' } as any)
 
       expect(getTurnState().tools).toEqual([])
       expect(turnController.reasoningText).toBe('')
@@ -1193,8 +1195,8 @@ describe('createGatewayEventHandler', () => {
       // current interrupt path leaves them visible until the next message.)
       expect(getTurnState().todos.find(t => t.content === 'late ghost')).toBeUndefined()
 
-      onEvent({ payload: {}, type: 'message.start' } as any)
-      onEvent({ payload: { text: 'fresh' }, type: 'reasoning.delta' } as any)
+      onEvent({ payload: {}, session_id: 'sess-1', type: 'message.start' } as any)
+      onEvent({ payload: { text: 'fresh' }, session_id: 'sess-1', type: 'reasoning.delta' } as any)
 
       expect(turnController.reasoningText).toBe('fresh')
     } finally {
@@ -1216,8 +1218,8 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     patchUiState({ sid: 'sess-1' })
-    onEvent({ payload: {}, type: 'message.start' } as any)
-    onEvent({ payload: { text: 'thinking…' }, type: 'reasoning.delta' } as any)
+    onEvent({ payload: {}, session_id: 'sess-1', type: 'message.start' } as any)
+    onEvent({ payload: { text: 'thinking…' }, session_id: 'sess-1', type: 'reasoning.delta' } as any)
     expect(getUiState().busy).toBe(true)
 
     turnController.interruptTurn(
@@ -1231,6 +1233,7 @@ describe('createGatewayEventHandler', () => {
     // The cancelled turn settles with a backend interrupted final_response.
     const before = appended.length
     onEvent({
+      session_id: 'sess-1',
       payload: { text: 'Operation interrupted: waiting for model response (4.1s elapsed).' },
       type: 'message.complete'
     } as any)
@@ -1354,8 +1357,9 @@ describe('createGatewayEventHandler', () => {
         const onEvent = createGatewayEventHandler(ctx)
 
         patchUiState({ sid: 'sess-1' })
-        onEvent({ payload: {}, type: 'message.start' } as any)
+        onEvent({ payload: {}, session_id: 'sess-1', type: 'message.start' } as any)
         onEvent({
+          session_id: 'sess-1',
           payload: { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ out' },
           type: 'notification.show'
         } as any)
@@ -1646,6 +1650,83 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('session-id event filter', () => {
+    it('drops session-scoped events from a different session', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      patchUiState({ sid: 'sess-A' })
+
+      // Event from session B — must be dropped
+      onEvent({ payload: { text: 'B says hi' }, session_id: 'sess-B', type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'B done' }, session_id: 'sess-B', type: 'message.complete' } as any)
+
+      expect(appended).toHaveLength(0)
+    })
+
+    it('drops session-scoped events with empty-string session_id when sid is set', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      patchUiState({ sid: 'sess-A' })
+
+      // Python _emit() can produce session_id="" via params.get("session_id", "")
+      // for session-scoped events (e.g. session.info from config.set handler).
+      // These must NOT bleed into the active session's view.
+      onEvent({ payload: { text: 'ghost' }, session_id: '', type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'ghost done' }, session_id: '', type: 'message.complete' } as any)
+
+      expect(appended).toHaveLength(0)
+    })
+
+    it('drops all non-global events during null-sid switch window', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      // sid is null (resetSession was called during a switch)
+      // Events from any session must be dropped
+      onEvent({ payload: { text: 'stale' }, session_id: 'sess-A', type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'stale too' }, session_id: '', type: 'message.delta' } as any)
+
+      expect(appended).toHaveLength(0)
+    })
+
+    it('passes through global events regardless of session_id', () => {
+      const appended: Msg[] = []
+      const ctx = buildCtx(appended)
+      const onEvent = createGatewayEventHandler(ctx)
+
+      patchUiState({ sid: 'sess-A' })
+
+      // pet.*, skin.*, billing.*, gateway.* are global — always pass
+      onEvent({ payload: { token: 'tok', count: 1 }, session_id: '', type: 'pet.generate.progress' } as any)
+      onEvent({ payload: {}, session_id: 'sess-B', type: 'pet.hatch.progress' } as any)
+
+      // billing.step_up.verification is global
+      onEvent({
+        payload: { verification_url: 'https://example.com' },
+        session_id: '',
+        type: 'billing.step_up.verification'
+      } as any)
+
+      // Should have printed the billing URL
+      expect((ctx.system.sys as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]).join('\n')).toContain('https://example.com')
+    })
+
+    it('accepts session-scoped events that match the active sid', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      patchUiState({ sid: 'sess-A' })
+
+      onEvent({ payload: { text: 'hello' }, session_id: 'sess-A', type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'hello' }, session_id: 'sess-A', type: 'message.complete' } as any)
+
+      expect(appended).toHaveLength(1)
+      expect(appended[0]).toMatchObject({ role: 'assistant', text: 'hello' })
     })
   })
 })

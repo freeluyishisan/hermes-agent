@@ -27,6 +27,16 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
+// Event types that are genuinely global — not tied to any specific session.
+// The Python _emit() always sets session_id, but these types are emitted with
+// sid="" (pet.*, skin.changed) or via params that may not carry a session_id
+// (billing.step_up.verification). They must pass the filter unconditionally.
+// Everything else is session-scoped and must match the active session id.
+const GLOBAL_EVENT_PREFIXES = ['gateway.', 'pet.', 'skin.', 'billing.'] as const
+
+const isGlobalEvent = (type: string): boolean =>
+  GLOBAL_EVENT_PREFIXES.some(prefix => type.startsWith(prefix))
+
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
 const applySkin = (s: GatewaySkin) =>
@@ -404,8 +414,31 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
-    if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
-      return
+    // Filter events by session id. Session-scoped events (message.*, tool.*,
+    // session.info, etc.) must match the active session id; events from other
+    // sessions are dropped to prevent cross-session bleed.
+    //
+    // The Python _emit() always sets session_id, but it can be an empty string
+    // when the caller omits it (e.g. params.get("session_id", "") in
+    // session.set_cwd / config.set handlers). The previous filter used
+    // `ev.session_id &&` as a truthiness guard, which let empty-string
+    // session_id events through regardless of the active session — causing
+    // session.info and other session-scoped events to bleed across sessions.
+    //
+    // The fix compares evSid against (sid ?? '') so:
+    //   - sid set, evSid=""  → mismatch → dropped  (the empty-string bleed)
+    //   - sid set, evSid≠sid → mismatch → dropped  (cross-session bleed)
+    //   - sid null, evSid≠"" → mismatch → dropped  (null-sid switch window)
+    //   - sid null, evSid=""  → match    → passed   (startup / tests)
+    //
+    // Genuinely global events (gateway.*, pet.*, skin.*, billing.*) bypass
+    // the filter entirely — they are never session-scoped (#51058).
+    if (!isGlobalEvent(ev.type)) {
+      const evSid = ev.session_id ?? ''
+
+      if (evSid !== (sid ?? '')) {
+        return
+      }
     }
 
     switch (ev.type) {
