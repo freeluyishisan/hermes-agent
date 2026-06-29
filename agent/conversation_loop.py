@@ -47,6 +47,7 @@ from agent.message_sanitization import (
     _strip_images_from_messages,
     _strip_non_ascii,
 )
+from agent.context_compressor import evict_images_for_413
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
@@ -3115,6 +3116,21 @@ def run_conversation(
                         }
                     agent._buffer_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
+                    # First: evict image/base64 payloads from ALL messages
+                    # (including protected tail).  413 is a byte-size limit,
+                    # not a token limit — a single 2MB screenshot in the tail
+                    # can trigger 413 even with low token counts.
+                    evicted_messages = evict_images_for_413(messages)
+                    if evicted_messages is not messages:
+                        agent._buffer_status("🖼️  Evicted images from context for 413 recovery...")
+                        messages = evicted_messages
+                        # Image eviction alone may be enough — retry without
+                        # full compression (cheaper, preserves conversation).
+                        time.sleep(2)
+                        _retry.restart_with_compressed_messages = True
+                        break
+
+                    # No images to evict — fall through to full compression.
                     original_len = len(messages)
                     original_tokens = estimate_messages_tokens_rough(messages)
                     messages, active_system_prompt = agent._compress_context(
