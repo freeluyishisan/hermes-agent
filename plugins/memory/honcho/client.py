@@ -17,7 +17,8 @@ import json
 import os
 import logging
 import hashlib
-from dataclasses import dataclass, field
+import threading
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -173,6 +174,68 @@ def _parse_optional_string(
     return str(value).strip()
 
 
+def _read_api_key_file(value: Any, *, config_path: Path) -> str | None:
+    """Read an API/JWT key from ``apiKeyFile`` without leaking it into config.
+
+    Relative paths are resolved next to the config file so a profile can carry
+    a self-contained ``honcho.json`` plus a sibling ``runtime-keys/`` directory.
+    Missing/unreadable files fail closed by returning ``None``; callers can
+    still enable loopback/no-auth configurations via ``baseUrl``.
+    """
+    if not value:
+        return None
+    try:
+        key_path = Path(str(value)).expanduser()
+        if not key_path.is_absolute():
+            key_path = config_path.parent / key_path
+        text = key_path.read_text(encoding="utf-8").strip()
+        return text or None
+    except OSError as exc:
+        logger.warning("Failed to read Honcho apiKeyFile %s: %s", value, exc)
+        return None
+
+
+def _resolve_api_key(block: dict, root: dict, *, config_path: Path) -> tuple[str | None, bool]:
+    """Resolve apiKey/apiKeyFile with host-block precedence.
+
+    Returns ``(api_key, host_explicit)`` where ``host_explicit`` is true only
+    when the active host/compartment block itself supplied key material.
+    """
+    if block.get("apiKey"):
+        return str(block.get("apiKey")), True
+    file_key = _read_api_key_file(block.get("apiKeyFile"), config_path=config_path)
+    if file_key:
+        return file_key, True
+    if root.get("apiKey"):
+        return str(root.get("apiKey")), False
+    file_key = _read_api_key_file(root.get("apiKeyFile"), config_path=config_path)
+    if file_key:
+        return file_key, False
+    env_key = os.environ.get("HONCHO_API_KEY")
+    return env_key, False
+
+
+def _parse_agent_compartments(source: Any) -> dict[str, list[str]]:
+    """Parse agent -> compartment allowlist mappings from honcho.json."""
+    if not isinstance(source, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for raw_agent, raw_names in source.items():
+        agent = str(raw_agent).strip()
+        if not agent:
+            continue
+        if isinstance(raw_names, str):
+            names = [raw_names]
+        elif isinstance(raw_names, list):
+            names = raw_names
+        else:
+            continue
+        cleaned = [str(name).strip() for name in names if str(name).strip()]
+        if cleaned:
+            result[agent] = cleaned
+    return result
+
+
 def _parse_dialectic_depth(host_val, root_val) -> int:
     """Parse dialecticDepth: host wins, then root, then 1. Clamped to 1-3."""
     for val in (host_val, root_val):
@@ -289,6 +352,24 @@ def _resolve_observation(
 
 
 @dataclass
+class HonchoCompartmentConfig:
+    """Resolved Honcho compartment with its own workspace/key boundary."""
+
+    name: str
+    workspace_id: str
+    api_key: str | None = None
+    environment: str = "production"
+    base_url: str | None = None
+    timeout: float | None = None
+    read: bool = True
+    write: bool = True
+    session_strategy: str | None = None
+    manual_session_name: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    api_key_explicit: bool = False
+
+
+@dataclass
 class HonchoClientConfig:
     """Configuration for Honcho client, resolved for a specific host."""
 
@@ -370,10 +451,16 @@ class HonchoClientConfig:
     ai_observe_others: bool = True
     # Session resolution
     session_strategy: str = "per-directory"
+    manual_session_name: str | None = None
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
+    # Named workspace/key compartments for hard memory boundaries (e.g. ops vs personal).
+    compartments: dict[str, HonchoCompartmentConfig] = field(default_factory=dict)
+    agent_compartments: dict[str, list[str]] = field(default_factory=dict)
+    # True when this config's api_key came from the active host/compartment block.
+    api_key_explicit: bool = False
     # True when Honcho was explicitly configured for this host (hosts.hermes
     # block exists or enabled was set explicitly), vs auto-enabled from a
     # stray HONCHO_API_KEY env var.
@@ -440,11 +527,7 @@ class HonchoClientConfig:
             or raw.get("aiPeer")
             or resolved_host
         )
-        api_key = (
-            host_block.get("apiKey")
-            or raw.get("apiKey")
-            or os.environ.get("HONCHO_API_KEY")
-        )
+        api_key, api_key_explicit = _resolve_api_key(host_block, raw, config_path=path)
 
         environment = (
             host_block.get("environment")
@@ -495,10 +578,80 @@ class HonchoClientConfig:
             host_block.get("sessionStrategy")
             or raw.get("sessionStrategy", "per-directory")
         )
+        manual_session_name = (
+            host_block.get("manualSessionName")
+            or raw.get("manualSessionName")
+        )
         host_prefix = host_block.get("sessionPeerPrefix")
         session_peer_prefix = (
             host_prefix if host_prefix is not None
             else raw.get("sessionPeerPrefix", False)
+        )
+
+        compartment_source = host_block.get("compartments") or raw.get("compartments") or {}
+        compartments: dict[str, HonchoCompartmentConfig] = {}
+        if isinstance(compartment_source, dict):
+            for raw_name, raw_block in compartment_source.items():
+                name = str(raw_name).strip()
+                if not name or not isinstance(raw_block, dict):
+                    continue
+                if raw_block.get("apiKey"):
+                    comp_api_key = str(raw_block.get("apiKey"))
+                    comp_key_explicit = True
+                else:
+                    comp_api_key = _read_api_key_file(
+                        raw_block.get("apiKeyFile"),
+                        config_path=path,
+                    )
+                    comp_key_explicit = bool(comp_api_key)
+                if not comp_api_key:
+                    # Compartment-level auth inherits from the active host before
+                    # falling back to root/env. The CLI labels this state as
+                    # "inherited/default", so host-scoped JWTs must work when a
+                    # compartment only overrides its workspace.
+                    if host_block.get("apiKey"):
+                        comp_api_key = str(host_block.get("apiKey"))
+                    else:
+                        comp_api_key = _read_api_key_file(
+                            host_block.get("apiKeyFile"),
+                            config_path=path,
+                        )
+                    comp_key_explicit = False
+                if not comp_api_key:
+                    comp_api_key, _ = _resolve_api_key(
+                        {},
+                        raw,
+                        config_path=path,
+                    )
+                    comp_key_explicit = False
+                comp_workspace = raw_block.get("workspace") or name
+                comp_base_url = (
+                    raw_block.get("baseUrl")
+                    or raw_block.get("base_url")
+                    or base_url
+                )
+                comp_timeout = _resolve_optional_float(
+                    raw_block.get("timeout"),
+                    raw_block.get("requestTimeout"),
+                    timeout,
+                )
+                compartments[name] = HonchoCompartmentConfig(
+                    name=name,
+                    workspace_id=str(comp_workspace),
+                    api_key=comp_api_key,
+                    environment=raw_block.get("environment") or environment,
+                    base_url=comp_base_url,
+                    timeout=comp_timeout,
+                    read=bool(raw_block.get("read", True)),
+                    write=bool(raw_block.get("write", True)),
+                    session_strategy=raw_block.get("sessionStrategy"),
+                    manual_session_name=raw_block.get("manualSessionName"),
+                    raw=raw_block,
+                    api_key_explicit=comp_key_explicit,
+                )
+
+        agent_compartments = _parse_agent_compartments(
+            host_block.get("agents") or raw.get("agents")
         )
 
         return cls(
@@ -613,10 +766,39 @@ class HonchoClientConfig:
                 host_block.get("observation") or raw.get("observation"),
             ),
             session_strategy=session_strategy,
+            manual_session_name=manual_session_name,
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
             raw=raw,
+            compartments=compartments,
+            agent_compartments=agent_compartments,
+            api_key_explicit=api_key_explicit,
             explicitly_configured=_explicitly_configured,
+        )
+
+    def for_compartment(self, name: str) -> "HonchoClientConfig":
+        """Return a client config narrowed to a named Honcho compartment.
+
+        This is the adapter seam for dual-memory agents: each returned config
+        points at one workspace/key pair while preserving the host's peer,
+        recall, observation, and session settings.
+        """
+        compartment = self.compartments[name]
+        return replace(
+            self,
+            host=f"{self.host}:{name}",
+            workspace_id=compartment.workspace_id,
+            api_key=compartment.api_key,
+            environment=compartment.environment,
+            base_url=compartment.base_url,
+            timeout=compartment.timeout,
+            enabled=bool(compartment.api_key or compartment.base_url),
+            session_strategy=compartment.session_strategy or self.session_strategy,
+            manual_session_name=compartment.manual_session_name or self.manual_session_name,
+            compartments={},
+            agent_compartments={},
+            api_key_explicit=compartment.api_key_explicit,
+            raw={**(self.raw or {}), "_compartment": name},
         )
 
     @staticmethod
@@ -680,13 +862,14 @@ class HonchoClientConfig:
 
         Resolution order:
           1. Gateway session key (stable per-chat identifier from gateway platforms)
-          2. per-session strategy — Hermes session_id ({timestamp}_{hex}); authoritative,
+          2. Manual strategy override
+          3. per-session strategy — Hermes session_id ({timestamp}_{hex}); authoritative,
              so a generated title never remaps a live conversation
-          3. Manual directory override from sessions map
-          4. Hermes session title (from /title command; non-per-session)
-          5. per-repo strategy — git repo root directory name
-          6. per-directory strategy — directory basename
-          7. global strategy — workspace name
+          4. Manual directory override from sessions map
+          5. Hermes session title (from /title command; non-per-session)
+          6. per-repo strategy — git repo root directory name
+          7. per-directory strategy — directory basename
+          8. global strategy — workspace name
         """
         import re
 
@@ -699,6 +882,11 @@ class HonchoClientConfig:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
             if sanitized:
                 return self._enforce_session_id_limit(sanitized, gateway_session_key)
+
+        # Manual compartment override: the CLI can pin a compartment to a
+        # specific Honcho session while the host keeps another strategy.
+        if self.session_strategy == "manual" and self.manual_session_name:
+            return self.manual_session_name
 
         # per-session: the run's session_id IS the identity — resolve before the
         # cwd map / title so an auto-generated title can't remap a live
@@ -739,7 +927,14 @@ class HonchoClientConfig:
         return self.workspace_id
 
 
-_honcho_client_slot: SingletonSlot = SingletonSlot()
+_honcho_client_slots: dict[tuple[str, str, str], SingletonSlot] = {}
+_honcho_client_slots_lock = threading.Lock()
+
+
+def _client_cache_key(config: HonchoClientConfig) -> tuple[str, str, str]:
+    """Return a non-secret cache key for a Honcho client connection."""
+    endpoint = (config.base_url or config.environment or "production").rstrip("/")
+    return (endpoint, config.workspace_id, config.host)
 
 
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
@@ -770,7 +965,7 @@ def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -
         host = config.host if config is not None else resolve_active_host()
         token, refreshed = oauth.ensure_fresh_token(resolve_config_path(), host)
         if refreshed and token and not oauth.apply_token_to_client(client, token):
-            _honcho_client_slot.reset()
+            reset_honcho_client()
     except Exception:
         logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
 
@@ -785,13 +980,17 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     first calls (double-checked locking via ``SingletonSlot``), so racing
     threads can't each construct a client and leak the loser's connection.
     """
-    cached = _honcho_client_slot.peek()
+    if config is None:
+        config = HonchoClientConfig.from_global_config()
+
+    cache_key = _client_cache_key(config)
+    with _honcho_client_slots_lock:
+        slot = _honcho_client_slots.setdefault(cache_key, SingletonSlot())
+
+    cached = slot.peek()
     if cached is not None:
         _refresh_cached_oauth(cached, config)
         return cached
-
-    if config is None:
-        config = HonchoClientConfig.from_global_config()
 
     # Refresh a near-expiry OAuth grant before the first build so the client
     # starts with a live access token rather than 401ing an hour in.
@@ -883,7 +1082,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             # required-non-empty placeholder unless the host block opts in.
             _raw = config.raw or {}
             _host_block = (_raw.get("hosts") or {}).get(config.host, {})
-            _host_has_key = bool(_host_block.get("apiKey"))
+            _host_has_key = config.api_key_explicit or bool(_host_block.get("apiKey") or _host_block.get("apiKeyFile"))
             effective_api_key = config.api_key if _host_has_key else "local"
         else:
             effective_api_key = config.api_key
@@ -912,9 +1111,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
         return Honcho(**kwargs)
 
-    return _honcho_client_slot.get(_build)
+    return slot.get(_build)
 
 
 def reset_honcho_client() -> None:
-    """Reset the Honcho client singleton (useful for testing)."""
-    _honcho_client_slot.reset()
+    """Reset all cached Honcho clients (useful for testing)."""
+    with _honcho_client_slots_lock:
+        for slot in _honcho_client_slots.values():
+            slot.reset()
+        _honcho_client_slots.clear()
