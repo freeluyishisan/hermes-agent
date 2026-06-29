@@ -611,3 +611,118 @@ class TestHermesBinDirOnPath:
         entries = result["PATH"].split(os.pathsep)
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries
+
+
+class TestAuxiliarySecretStripping:
+    """Verify AUXILIARY_*_API_KEY and GATEWAY_RELAY_* are stripped from subprocess env.
+
+    The name-based _HERMES_PROVIDER_ENV_BLOCKLIST does not include dynamic
+    AUXILIARY_<TASK>_API_KEY vars injected by gateway/run.py and cli.py from
+    config.yaml[auxiliary]. These are separate, often higher-spend inference
+    credentials (vision, title-gen, web-extract) that must never reach
+    model-authored shell commands.
+    """
+
+    def test_make_run_env_strips_auxiliary_api_key(self):
+        """_make_run_env must not pass AUXILIARY_*_API_KEY to the subprocess."""
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {
+            "AUXILIARY_VISION_API_KEY": "sk-aux-secret-1234567890",
+            "AUXILIARY_VISION_BASE_URL": "https://api.example.com",
+            "AUXILIARY_VISION_MODEL": "gpt-4o",
+            "AUXILIARY_VISION_PROVIDER": "openai",
+            "PATH": "/usr/bin:/bin",
+        }, clear=True):
+            result = _make_run_env({})
+        assert "AUXILIARY_VISION_API_KEY" not in result, \
+            "AUXILIARY_*_API_KEY must be stripped from subprocess env"
+        assert "AUXILIARY_VISION_BASE_URL" not in result, \
+            "AUXILIARY_*_BASE_URL must be stripped from subprocess env"
+        assert result.get("AUXILIARY_VISION_MODEL") == "gpt-4o", \
+            "Non-secret AUXILIARY vars must pass through"
+        assert result.get("AUXILIARY_VISION_PROVIDER") == "openai", \
+            "Non-secret AUXILIARY vars must pass through"
+
+    def test_make_run_env_strips_gateway_relay_secret(self):
+        """_make_run_env must not pass GATEWAY_RELAY_SECRET to the subprocess."""
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {
+            "GATEWAY_RELAY_ID": "gw-123",
+            "GATEWAY_RELAY_SECRET": "relay-secret-value",
+            "GATEWAY_RELAY_DELIVERY_KEY": "delivery-key-value",
+            "PATH": "/usr/bin:/bin",
+        }, clear=True):
+            result = _make_run_env({})
+        assert "GATEWAY_RELAY_SECRET" not in result
+        assert "GATEWAY_RELAY_DELIVERY_KEY" not in result
+        assert "GATEWAY_RELAY_ID" not in result
+
+    def test_sanitize_subprocess_env_strips_auxiliary_api_key(self):
+        """_sanitize_subprocess_env must not pass AUXILIARY_*_API_KEY through."""
+        from tools.environments.local import _sanitize_subprocess_env
+        base_env = {
+            "AUXILIARY_TITLE_API_KEY": "sk-title-secret-1234567890",
+            "AUXILIARY_TITLE_PROVIDER": "openai",
+            "PATH": "/usr/bin:/bin",
+        }
+        result = _sanitize_subprocess_env(base_env)
+        assert "AUXILIARY_TITLE_API_KEY" not in result
+        assert result.get("AUXILIARY_TITLE_PROVIDER") == "openai"
+
+    def test_is_hermes_internal_secret_patterns(self):
+        """_is_hermes_internal_secret catches AUXILIARY_*_API_KEY and _BASE_URL."""
+        from tools.environments.local import _is_hermes_internal_secret
+        assert _is_hermes_internal_secret("AUXILIARY_VISION_API_KEY")
+        assert _is_hermes_internal_secret("AUXILIARY_VISION_BASE_URL")
+        assert _is_hermes_internal_secret("auxiliary_title_api_key")
+        # GATEWAY_RELAY_* secret-like values are also Tier-1 internal secrets.
+        assert _is_hermes_internal_secret("GATEWAY_RELAY_SECRET")
+        assert _is_hermes_internal_secret("GATEWAY_RELAY_DELIVERY_KEY")
+        assert _is_hermes_internal_secret("gateway_relay_foo_token")
+        assert not _is_hermes_internal_secret("AUXILIARY_VISION_MODEL")
+        assert not _is_hermes_internal_secret("AUXILIARY_VISION_PROVIDER")
+        # Non-secret GATEWAY_RELAY_* routing hints must NOT be matched.
+        assert not _is_hermes_internal_secret("GATEWAY_RELAY_URL")
+        assert not _is_hermes_internal_secret("GATEWAY_RELAY_PLATFORMS")
+        assert not _is_hermes_internal_secret("PATH")
+        assert not _is_hermes_internal_secret("HOME")
+
+    def test_make_run_env_blocks_auxiliary_even_when_passthrough_registered(self):
+        """Auxiliary secrets must be blocked even if registered in env_passthrough.
+
+        The passthrough registry is an opt-in escape hatch for non-secret env
+        vars. It must NOT be able to override the blocklist for Hermes-internal
+        secrets like AUXILIARY_*_API_KEY and AUXILIARY_*_BASE_URL.
+        """
+        from tools.environments.local import _make_run_env
+
+        mock_passthrough = MagicMock(return_value=True)
+        with patch.dict(os.environ, {
+            "AUXILIARY_VISION_API_KEY": "sk-aux-secret-1234567890",
+            "AUXILIARY_VISION_BASE_URL": "https://api.example.com",
+            "PATH": "/usr/bin:/bin",
+        }, clear=True):
+            with patch("tools.environments.local.is_env_passthrough", mock_passthrough, create=True):
+                with patch("tools.env_passthrough.is_env_passthrough", mock_passthrough):
+                    result = _make_run_env({})
+
+        assert "AUXILIARY_VISION_API_KEY" not in result, \
+            "AUXILIARY_*_API_KEY must be blocked even when passthrough-registered"
+        assert "AUXILIARY_VISION_BASE_URL" not in result, \
+            "AUXILIARY_*_BASE_URL must be blocked even when passthrough-registered"
+
+    def test_sanitize_blocks_auxiliary_even_when_passthrough_registered(self):
+        """_sanitize_subprocess_env must block auxiliary secrets even with passthrough."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        mock_passthrough = MagicMock(return_value=True)
+        base_env = {
+            "AUXILIARY_TITLE_API_KEY": "sk-title-secret-1234567890",
+            "AUXILIARY_TITLE_BASE_URL": "https://api.title.com",
+            "PATH": "/usr/bin:/bin",
+        }
+        with patch("tools.env_passthrough.is_env_passthrough", mock_passthrough):
+            result = _sanitize_subprocess_env(base_env)
+
+        assert "AUXILIARY_TITLE_API_KEY" not in result
+        assert "AUXILIARY_TITLE_BASE_URL" not in result
