@@ -3013,7 +3013,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 31,
+    "_config_version": 27,
 }
 
 # =============================================================================
