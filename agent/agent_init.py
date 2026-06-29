@@ -1671,6 +1671,13 @@ def init_agent(
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)
+    # Respect explicit model.context_length override from config.yaml.
+    # If the user set it, trust their value — they know their server's
+    # true capacity and the override exists precisely for servers that
+    # report a smaller window than the model actually supports.
+    _config_ctx = getattr(agent, "_config_context_length", None)
+    if _config_ctx is not None and _config_ctx > 0:
+        _ctx = _config_ctx
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
