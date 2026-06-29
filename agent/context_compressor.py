@@ -882,6 +882,7 @@ class ContextCompressor(ContextEngine):
         # this flag to know "compression was attempted but aborted, freeze
         # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
+ 
         # Set True when the summary call failed with an authentication /
         # permission error (HTTP 401/403). Auth failures are non-recoverable
         # at the request level — the credential or endpoint is broken — so
@@ -899,6 +900,7 @@ class ContextCompressor(ContextEngine):
         # strictly better than discarding context for a transient blip
         # (#29559, #25585). Independent of abort_on_summary_failure.
         self._last_summary_network_failure: bool = False
+ 
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
         # succeeded.  Silent recovery would hide the broken config.
@@ -961,18 +963,25 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
         return True
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int = None, force: bool = False) -> bool:
         """Check if context exceeds the compression threshold.
 
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        Args:
+            prompt_tokens: Optional token count to check. Defaults to last_prompt_tokens.
+            force: If True, bypass anti-thrashing protection. Useful for
+                recovery after an interrupted turn or manual /compress.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
-        if self._ineffective_compression_count >= 2:
+        # Skip this check if force=True (recovery after interrupt) or if the
+        # last compression was interrupted (don't penalize incomplete passes).
+        if not force and self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped — last %d compressions saved <10%% each. "
@@ -2663,12 +2672,16 @@ This compaction should PRIORITISE preserving all information related to the focu
         saved_estimate = display_tokens - new_estimate
 
         # Anti-thrashing: track compression effectiveness
+        # Don't count interrupted compressions as ineffective.
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
-        if savings_pct < 10:
-            self._ineffective_compression_count += 1
-        else:
-            self._ineffective_compression_count = 0
+        if not self._last_compression_interrupted:
+            if savings_pct < 10:
+                self._ineffective_compression_count += 1
+            else:
+                self._ineffective_compression_count = 0
+        # Reset interrupted flag after processing this compression
+        self._last_compression_interrupted = False
 
         if not self.quiet_mode:
             logger.info(
