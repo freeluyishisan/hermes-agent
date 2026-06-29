@@ -202,6 +202,8 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
+  const overlay = useStore($overlayState)
+  const floatingOverlayActive = Boolean(overlay.modelPicker || overlay.pager || overlay.sessions || overlay.skillsHub)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
   const promptText = composerPromptText(
@@ -293,7 +295,7 @@ const ComposerPane = memo(function ComposerPane({
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
-          completions={composer.completions}
+          completions={isBlocked ? [] : composer.completions}
           onActiveSessionClose={actions.closeLiveSession}
           onActiveSessionSelect={actions.activateLiveSession}
           onModelSelect={actions.onModelSelect}
@@ -304,6 +306,12 @@ const ComposerPane = memo(function ComposerPane({
         />
 
         {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
+
+        {isBlocked && floatingOverlayActive && (
+          <Box height={1} width={Math.max(1, composer.cols - 2)}>
+            <Text> </Text>
+          </Box>
+        )}
 
         {!isBlocked && (
           <>
