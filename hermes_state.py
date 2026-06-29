@@ -1486,7 +1486,14 @@ class SessionDB:
         parent_session_id: str = None,
         cwd: str = None,
     ) -> None:
-        """Shared INSERT OR IGNORE for session rows."""
+        """Shared INSERT OR IGNORE for session rows.
+
+        ``chat_id``/``thread_id`` record the messaging origin (the chat/room and
+        thread the session was started in) so that gateway ``/resume`` can prove
+        a persisted, now-inactive row belongs to the caller's chat/thread before
+        switching to it (IDOR scoping — without them the ``sessions`` table has
+        no chat/thread to compare).
+        """
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (
